@@ -38,6 +38,7 @@ function extractTaskId(data) {
     data?.data?.taskId ||
     data?.data?.task_id ||
     data?.data?.recordId ||
+    data?.data?.record_id ||
     null
   );
 }
@@ -90,7 +91,9 @@ app.post('/api/suno-callback', (req, res) => {
     body?.id ||
     body?.data?.taskId ||
     body?.data?.task_id ||
-    body?.data?.id;
+    body?.data?.id ||
+    body?.data?.recordId ||
+    body?.data?.record_id;
 
   if (taskId) {
     callbackStore.set(String(taskId), body);
@@ -125,9 +128,12 @@ ${prompt}`;
     }
 
     const payload = {
-      prompt,
       title,
+      prompt,
       lyrics,
+      customMode: true,
+      instrumental: false,
+      style: prompt,
       callBackUrl: SUNO_CALLBACK_URL
     };
 
@@ -148,9 +154,11 @@ ${prompt}`;
       });
     }
 
+    const taskId = extractTaskId(data);
+
     res.json({
       ok: true,
-      taskId: extractTaskId(data),
+      taskId,
       upstream: data
     });
   } catch (error) {
