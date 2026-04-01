@@ -1,6 +1,3 @@
-// server.js
-// (copy everything from here ↓ into your file)
-
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -10,17 +7,19 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const SUNO_API_KEY = process.env.SUNO_API_KEY || '';
 const SUNO_BASE_URL = (process.env.SUNO_BASE_URL || 'https://api.sunoapi.org').replace(/\/+$/, '');
-const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/custom_generate';
-const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/get';
+const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/v1/generate';
+const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/v1/generate/record-info';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 app.use(cors({
   origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN.split(',').map(v => v.trim()),
+  credentials: false
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 function authHeaders() {
+  if (!SUNO_API_KEY) throw new Error('Missing SUNO_API_KEY');
   return {
     Authorization: `Bearer ${SUNO_API_KEY}`,
     'Content-Type': 'application/json'
@@ -28,70 +27,159 @@ function authHeaders() {
 }
 
 function extractTaskId(data) {
-  return data?.id || data?.taskId || data?.data?.id;
+  return (
+    data?.id ||
+    data?.taskId ||
+    data?.task_id ||
+    data?.data?.id ||
+    data?.data?.taskId ||
+    data?.data?.task_id ||
+    data?.data?.recordId ||
+    null
+  );
 }
 
 function extractAudioUrl(data) {
-  return data?.audio_url || data?.data?.[0]?.audio_url || null;
+  return (
+    data?.audioUrl ||
+    data?.audio_url ||
+    data?.data?.audioUrl ||
+    data?.data?.audio_url ||
+    data?.data?.sourceAudioUrl ||
+    data?.data?.source_audio_url ||
+    (Array.isArray(data?.data) ? (data.data[0]?.audioUrl || data.data[0]?.audio_url) : null) ||
+    null
+  );
 }
 
 function extractStatus(data) {
+  const raw = (
+    data?.status ||
+    data?.state ||
+    data?.data?.status ||
+    data?.data?.state ||
+    (Array.isArray(data?.data) ? data.data[0]?.status : '') ||
+    ''
+  ).toString().toLowerCase();
+
   if (extractAudioUrl(data)) return 'completed';
-  return data?.status || 'processing';
+  if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) return 'completed';
+  if (['failed', 'error', 'failure'].includes(raw)) return 'failed';
+  return raw || 'processing';
 }
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'suno-backend',
+    createPath: SUNO_CREATE_PATH,
+    statusPath: SUNO_STATUS_PATH,
+    hasApiKey: Boolean(SUNO_API_KEY)
+  });
+});
 
 app.post('/api/create-song', async (req, res) => {
   try {
-    const prompt = req.body.prompt || '';
-    let lyrics = req.body.lyrics || '';
+    const prompt = String(req.body.prompt || '').trim();
+    let lyrics = String(req.body.lyrics || '').trim();
+    const title = String(req.body.title || 'Untitled Song').trim();
+
+    if (!prompt && !lyrics) {
+      return res.status(400).json({ error: 'Prompt or lyrics is required.' });
+    }
 
     if (!lyrics) {
-      lyrics = `[Verse]\n${prompt}\n\n[Chorus]\n${prompt}`;
+      lyrics = `[Verse]
+${prompt}
+
+[Chorus]
+${prompt}
+
+[Outro]
+${prompt}`;
     }
 
     const payload = {
-      title: 'Generated Song',
       prompt,
-      tags: prompt,
-      lyrics,
-      make_instrumental: false,
-      model: 'chirp-v3-5'
+      title,
+      lyrics
     };
 
-    const r = await fetch(`${SUNO_BASE_URL}${SUNO_CREATE_PATH}`, {
+    const response = await fetch(`${SUNO_BASE_URL}${SUNO_CREATE_PATH}`, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify(payload)
     });
 
-    const data = await r.json();
+    const data = await response.json().catch(async () => ({ raw: await response.text() }));
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: 'Suno create request failed',
+        attemptedUrl: `${SUNO_BASE_URL}${SUNO_CREATE_PATH}`,
+        sentPayload: payload,
+        upstream: data
+      });
+    }
 
     res.json({
+      ok: true,
       taskId: extractTaskId(data),
       upstream: data
     });
-
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message || 'Unknown server error'
+    });
   }
 });
 
 app.get('/api/song-status/:id', async (req, res) => {
-  const id = req.params.id;
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'Missing task id' });
 
-  const url = `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?ids=${id}`;
+    const candidateUrls = [
+      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
+      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?id=${encodeURIComponent(id)}`,
+      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?recordId=${encodeURIComponent(id)}`
+    ];
 
-  const r = await fetch(url, {
-    headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
-  });
+    let lastData = null;
+    let lastStatus = 500;
 
-  const data = await r.json();
+    for (const candidate of candidateUrls) {
+      const response = await fetch(candidate, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
+      });
 
-  res.json({
-    status: extractStatus(data),
-    audioUrl: extractAudioUrl(data),
-    upstream: data
-  });
+      const data = await response.json().catch(async () => ({ raw: await response.text() }));
+      lastData = data;
+      lastStatus = response.status;
+
+      if (response.ok) {
+        return res.json({
+          ok: true,
+          taskId: id,
+          status: extractStatus(data),
+          audioUrl: extractAudioUrl(data),
+          upstream: data
+        });
+      }
+    }
+
+    return res.status(lastStatus).json({
+      error: 'Suno status request failed',
+      upstream: lastData
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message || 'Unknown server error'
+    });
+  }
 });
 
-app.listen(PORT, () => console.log('Server running'));
+app.listen(PORT, () => {
+  console.log(`Suno backend listening on port ${PORT}`);
+});
