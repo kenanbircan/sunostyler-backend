@@ -32,12 +32,12 @@ function authHeaders() {
 
 function extractTaskId(data) {
   return (
-    data?.id ||
-    data?.taskId ||
-    data?.task_id ||
-    data?.data?.id ||
-    data?.data?.taskId ||
     data?.data?.task_id ||
+    data?.data?.taskId ||
+    data?.data?.id ||
+    data?.task_id ||
+    data?.taskId ||
+    data?.id ||
     data?.data?.recordId ||
     data?.data?.record_id ||
     null
@@ -71,6 +71,16 @@ function extractStatus(data) {
   if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) return 'completed';
   if (['failed', 'error', 'failure'].includes(raw)) return 'failed';
   return raw || 'processing';
+}
+
+function buildShortStyle(prompt) {
+  const clean = String(prompt || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (clean.length <= 450) return clean;
+
+  return clean.slice(0, 450).trim();
 }
 
 app.get('/api/health', (_req, res) => {
@@ -129,13 +139,15 @@ ${prompt}`;
       return res.status(500).json({ error: 'Missing SUNO_CALLBACK_URL' });
     }
 
+    const shortStyle = buildShortStyle(prompt);
+
     const payload = {
       title,
       prompt,
       lyrics,
       customMode: true,
       instrumental: false,
-      style: prompt,
+      style: shortStyle,
       model: SUNO_MODEL,
       callBackUrl: SUNO_CALLBACK_URL
     };
