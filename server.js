@@ -10,6 +10,7 @@ const SUNO_BASE_URL = (process.env.SUNO_BASE_URL || 'https://api.sunoapi.org').r
 const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/v1/generate';
 const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/v1/generate/record-info';
 const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
+const SUNO_MODEL = process.env.SUNO_MODEL || 'V3_5';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 app.use(cors({
@@ -78,6 +79,7 @@ app.get('/api/health', (_req, res) => {
     service: 'suno-backend',
     createPath: SUNO_CREATE_PATH,
     statusPath: SUNO_STATUS_PATH,
+    model: SUNO_MODEL,
     hasApiKey: Boolean(SUNO_API_KEY),
     hasCallbackUrl: Boolean(SUNO_CALLBACK_URL)
   });
@@ -134,6 +136,7 @@ ${prompt}`;
       customMode: true,
       instrumental: false,
       style: prompt,
+      model: SUNO_MODEL,
       callBackUrl: SUNO_CALLBACK_URL
     };
 
