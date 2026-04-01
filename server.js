@@ -2,11 +2,6 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-/**
- * Suno backend for song generation + status polling
- * Production-oriented upgrade based on the user's existing server.js
- */
-
 const app = express();
 
 const PORT = Number(process.env.PORT || 10000);
@@ -15,7 +10,7 @@ const SUNO_BASE_URL = (process.env.SUNO_BASE_URL || 'https://api.sunoapi.org').r
 const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/v1/generate';
 const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/v1/generate/record-info';
 const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
-const SUNO_MODEL = process.env.SUNO_MODEL || 'V4_5';
+const SUNO_MODEL = process.env.SUNO_MODEL || 'V5_5';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '2mb';
 const CALLBACK_TTL_MS = Number(process.env.CALLBACK_TTL_MS || 24 * 60 * 60 * 1000);
@@ -100,7 +95,7 @@ function cleanString(value, fallback = '') {
 }
 
 function getModelLimits(model) {
-  return MODEL_LIMITS[model] || MODEL_LIMITS[SUNO_MODEL] || MODEL_LIMITS.V4_5;
+  return MODEL_LIMITS[model] || MODEL_LIMITS[SUNO_MODEL] || MODEL_LIMITS.V5_5;
 }
 
 function clamp01(value) {
@@ -117,12 +112,6 @@ function truncate(value, max) {
   return str.slice(0, max).trim();
 }
 
-function buildShortStyle(promptOrStyle, styleMax) {
-  const clean = cleanString(promptOrStyle || '');
-  if (!clean) return '';
-  return truncate(clean, styleMax);
-}
-
 function cleanupCallbackStore() {
   const cutoff = Date.now() - CALLBACK_TTL_MS;
   for (const [key, value] of callbackStore.entries()) {
@@ -133,7 +122,10 @@ function cleanupCallbackStore() {
   }
 }
 
-setInterval(cleanupCallbackStore, Math.max(60_000, Math.min(CALLBACK_TTL_MS, 10 * 60 * 1000))).unref();
+setInterval(
+  cleanupCallbackStore,
+  Math.max(60_000, Math.min(CALLBACK_TTL_MS, 10 * 60 * 1000))
+).unref();
 
 function extractTaskId(data) {
   return (
@@ -157,9 +149,7 @@ function extractAudioTracks(data) {
     data?.sunoData ||
     [];
 
-  if (!Array.isArray(sunoData)) {
-    return [];
-  }
+  if (!Array.isArray(sunoData)) return [];
 
   return sunoData.map(track => ({
     id: track?.id || null,
@@ -186,9 +176,7 @@ function extractAudioTracks(data) {
 
 function extractAudioUrl(data) {
   const tracks = extractAudioTracks(data);
-  if (tracks.length && tracks[0].audioUrl) {
-    return tracks[0].audioUrl;
-  }
+  if (tracks.length && tracks[0].audioUrl) return tracks[0].audioUrl;
 
   return (
     data?.audioUrl ||
@@ -211,23 +199,13 @@ function extractStatus(data) {
     ''
   ).toString().toLowerCase();
 
-  if (extractAudioTracks(data).length > 0 || extractAudioUrl(data)) {
-    return 'completed';
-  }
-
-  if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) {
-    return 'completed';
-  }
-
-  if (['failed', 'error', 'failure'].includes(raw)) {
-    return 'failed';
-  }
-
+  if (extractAudioTracks(data).length > 0 || extractAudioUrl(data)) return 'completed';
+  if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) return 'completed';
+  if (['failed', 'error', 'failure'].includes(raw)) return 'failed';
   if (['text', 'first', 'complete'].includes(raw)) {
     if (raw === 'complete') return 'completed';
     return raw;
   }
-
   return raw || 'processing';
 }
 
@@ -350,7 +328,7 @@ function validateCreateSongRequest(body) {
   const prompt = safeString(body.prompt || '').trim();
   const lyrics = safeString(body.lyrics || '').trim();
   const explicitStyle = cleanString(body.style || '');
-  const style = explicitStyle || buildShortStyle(prompt, limits.styleMax);
+  const style = explicitStyle;
 
   const errors = [];
 
@@ -384,12 +362,12 @@ function validateCreateSongRequest(body) {
     }
 
     if (!instrumental) {
-      const effectiveLyrics = lyrics || prompt;
+      const effectiveLyrics = prompt || lyrics;
       if (!effectiveLyrics) {
-        errors.push('lyrics or prompt is required when customMode is true and instrumental is false.');
+        errors.push('prompt or lyrics is required when customMode is true and instrumental is false.');
       }
       if (effectiveLyrics.length > limits.promptMax) {
-        errors.push(`lyrics/prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+        errors.push(`prompt/lyrics exceeds ${limits.promptMax} characters for model ${model}.`);
       }
     }
   }
@@ -593,33 +571,14 @@ app.post('/api/create-song', async (req, res) => {
       audioWeight
     } = validation.values;
 
-    if (customMode && !SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
-
-    /**
-     * Suno rule:
-     * - In customMode:true and instrumental:false, prompt is treated as exact lyrics.
-     * So we map:
-     *   - effective lyrics => prompt field sent to Suno
-     *   - style => style field
-     */
-    const effectivePrompt = customMode
-      ? (instrumental ? undefined : (lyrics || prompt))
-      : (prompt || lyrics);
-
     const payload = {
       customMode,
       instrumental,
       model,
+      prompt: undefined,
+      style: undefined,
+      title: undefined,
       callBackUrl: SUNO_CALLBACK_URL || undefined,
-      prompt: effectivePrompt,
-      style: customMode ? style : undefined,
-      title: customMode ? title : undefined,
       personaId: personaId || undefined,
       personaModel: personaId ? personaModel : undefined,
       negativeTags: negativeTags || undefined,
@@ -628,6 +587,27 @@ app.post('/api/create-song', async (req, res) => {
       weirdnessConstraint,
       audioWeight
     };
+
+    if (customMode) {
+      if (!SUNO_CALLBACK_URL) {
+        return res.status(500).json({
+          ok: false,
+          requestId,
+          error: 'Missing SUNO_CALLBACK_URL'
+        });
+      }
+
+      payload.title = title;
+      payload.style = style;
+
+      if (!instrumental) {
+        payload.prompt = prompt || lyrics;
+      }
+    } else {
+      payload.prompt = (prompt || lyrics || '').slice(0, 500);
+      delete payload.title;
+      delete payload.style;
+    }
 
     Object.keys(payload).forEach(key => {
       if (payload[key] === undefined || payload[key] === '') {
