@@ -9,6 +9,7 @@ const SUNO_API_KEY = process.env.SUNO_API_KEY || '';
 const SUNO_BASE_URL = (process.env.SUNO_BASE_URL || 'https://api.sunoapi.org').replace(/\/+$/, '');
 const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/v1/generate';
 const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/v1/generate/record-info';
+const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 app.use(cors({
@@ -16,7 +17,9 @@ app.use(cors({
   credentials: false
 }));
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
+
+const callbackStore = new Map();
 
 function authHeaders() {
   if (!SUNO_API_KEY) throw new Error('Missing SUNO_API_KEY');
@@ -74,8 +77,26 @@ app.get('/api/health', (_req, res) => {
     service: 'suno-backend',
     createPath: SUNO_CREATE_PATH,
     statusPath: SUNO_STATUS_PATH,
-    hasApiKey: Boolean(SUNO_API_KEY)
+    hasApiKey: Boolean(SUNO_API_KEY),
+    hasCallbackUrl: Boolean(SUNO_CALLBACK_URL)
   });
+});
+
+app.post('/api/suno-callback', (req, res) => {
+  const body = req.body || {};
+  const taskId =
+    body?.taskId ||
+    body?.task_id ||
+    body?.id ||
+    body?.data?.taskId ||
+    body?.data?.task_id ||
+    body?.data?.id;
+
+  if (taskId) {
+    callbackStore.set(String(taskId), body);
+  }
+
+  res.json({ ok: true });
 });
 
 app.post('/api/create-song', async (req, res) => {
@@ -99,10 +120,15 @@ ${prompt}
 ${prompt}`;
     }
 
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({ error: 'Missing SUNO_CALLBACK_URL' });
+    }
+
     const payload = {
       prompt,
       title,
-      lyrics
+      lyrics,
+      callBackUrl: SUNO_CALLBACK_URL
     };
 
     const response = await fetch(`${SUNO_BASE_URL}${SUNO_CREATE_PATH}`, {
@@ -138,6 +164,17 @@ app.get('/api/song-status/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ error: 'Missing task id' });
+
+    if (callbackStore.has(id)) {
+      const cb = callbackStore.get(id);
+      return res.json({
+        ok: true,
+        taskId: id,
+        status: extractStatus(cb),
+        audioUrl: extractAudioUrl(cb),
+        upstream: cb
+      });
+    }
 
     const candidateUrls = [
       `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
