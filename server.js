@@ -44,7 +44,32 @@ function extractTaskId(data) {
   );
 }
 
+function extractAudioTracks(data) {
+  const sunoData =
+    data?.data?.response?.sunoData ||
+    data?.response?.sunoData ||
+    [];
+
+  if (!Array.isArray(sunoData)) return [];
+
+  return sunoData.map(track => ({
+    id: track?.id || null,
+    audioUrl: track?.audioUrl || track?.sourceAudioUrl || track?.streamAudioUrl || track?.sourceStreamAudioUrl || null,
+    sourceAudioUrl: track?.sourceAudioUrl || null,
+    streamAudioUrl: track?.streamAudioUrl || null,
+    imageUrl: track?.imageUrl || track?.sourceImageUrl || null,
+    title: track?.title || 'Untitled',
+    duration: track?.duration || null,
+    modelName: track?.modelName || null,
+    prompt: track?.prompt || null,
+    tags: track?.tags || null
+  }));
+}
+
 function extractAudioUrl(data) {
+  const tracks = extractAudioTracks(data);
+  if (tracks.length && tracks[0].audioUrl) return tracks[0].audioUrl;
+
   return (
     data?.audioUrl ||
     data?.audio_url ||
@@ -52,7 +77,6 @@ function extractAudioUrl(data) {
     data?.data?.audio_url ||
     data?.data?.sourceAudioUrl ||
     data?.data?.source_audio_url ||
-    (Array.isArray(data?.data) ? (data.data[0]?.audioUrl || data.data[0]?.audio_url) : null) ||
     null
   );
 }
@@ -63,11 +87,10 @@ function extractStatus(data) {
     data?.state ||
     data?.data?.status ||
     data?.data?.state ||
-    (Array.isArray(data?.data) ? data.data[0]?.status : '') ||
     ''
   ).toString().toLowerCase();
 
-  if (extractAudioUrl(data)) return 'completed';
+  if (extractAudioTracks(data).length > 0 || extractAudioUrl(data)) return 'completed';
   if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) return 'completed';
   if (['failed', 'error', 'failure'].includes(raw)) return 'failed';
   return raw || 'processing';
@@ -79,7 +102,6 @@ function buildShortStyle(prompt) {
     .trim();
 
   if (clean.length <= 450) return clean;
-
   return clean.slice(0, 450).trim();
 }
 
@@ -186,7 +208,9 @@ ${prompt}`;
 app.get('/api/song-status/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    if (!id) return res.status(400).json({ error: 'Missing task id' });
+    if (!id) {
+      return res.status(400).json({ error: 'Missing task id' });
+    }
 
     if (callbackStore.has(id)) {
       const cb = callbackStore.get(id);
@@ -195,6 +219,7 @@ app.get('/api/song-status/:id', async (req, res) => {
         taskId: id,
         status: extractStatus(cb),
         audioUrl: extractAudioUrl(cb),
+        tracks: extractAudioTracks(cb),
         upstream: cb
       });
     }
@@ -224,6 +249,7 @@ app.get('/api/song-status/:id', async (req, res) => {
           taskId: id,
           status: extractStatus(data),
           audioUrl: extractAudioUrl(data),
+          tracks: extractAudioTracks(data),
           upstream: data
         });
       }
