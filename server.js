@@ -57,12 +57,15 @@ function extractAudioTracks(data) {
     audioUrl: track?.audioUrl || track?.sourceAudioUrl || track?.streamAudioUrl || track?.sourceStreamAudioUrl || null,
     sourceAudioUrl: track?.sourceAudioUrl || null,
     streamAudioUrl: track?.streamAudioUrl || null,
+    sourceStreamAudioUrl: track?.sourceStreamAudioUrl || null,
     imageUrl: track?.imageUrl || track?.sourceImageUrl || null,
+    sourceImageUrl: track?.sourceImageUrl || null,
     title: track?.title || 'Untitled',
     duration: track?.duration || null,
     modelName: track?.modelName || null,
     prompt: track?.prompt || null,
-    tags: track?.tags || null
+    tags: track?.tags || null,
+    createTime: track?.createTime || null
   }));
 }
 
@@ -103,6 +106,93 @@ function buildShortStyle(prompt) {
 
   if (clean.length <= 450) return clean;
   return clean.slice(0, 450).trim();
+}
+
+function normalizeError(responseStatus, data) {
+  const upstreamCode = data?.code;
+  const upstreamMsg = data?.msg || data?.message || 'Unknown upstream error';
+
+  if (responseStatus === 429 || upstreamCode === 429) {
+    return {
+      error: 'Suno credits are insufficient. Please top up the API account.',
+      code: 429,
+      upstream: data
+    };
+  }
+
+  if (upstreamMsg === 'Please enter callBackUrl.') {
+    return {
+      error: 'Suno callback URL is missing.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (upstreamMsg === 'customMode cannot be null') {
+    return {
+      error: 'Suno customMode is missing from the request.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (String(upstreamMsg).includes('model cannot be null')) {
+    return {
+      error: 'Suno model is missing or invalid.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (String(upstreamMsg).includes('music style cannot exceed 500 characters')) {
+    return {
+      error: 'Suno music style is too long.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  return {
+    error: 'Suno request failed.',
+    code: responseStatus || 500,
+    upstream: data
+  };
+}
+
+async function fetchSunoStatusById(id) {
+  const candidateUrls = [
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?id=${encodeURIComponent(id)}`,
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?recordId=${encodeURIComponent(id)}`
+  ];
+
+  let lastData = null;
+  let lastStatus = 500;
+
+  for (const candidate of candidateUrls) {
+    const response = await fetch(candidate, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
+    });
+
+    const data = await response.json().catch(async () => ({ raw: await response.text() }));
+    lastData = data;
+    lastStatus = response.status;
+
+    if (response.ok) {
+      return {
+        ok: true,
+        statusCode: response.status,
+        data
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    statusCode: lastStatus,
+    data: lastData
+  };
 }
 
 app.get('/api/health', (_req, res) => {
@@ -182,24 +272,28 @@ ${prompt}`;
 
     const data = await response.json().catch(async () => ({ raw: await response.text() }));
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: 'Suno create request failed',
+    if (!response.ok || (data?.code && data.code !== 200)) {
+      const normalized = normalizeError(response.status, data);
+      return res.status(normalized.code === 429 ? 200 : (response.status || normalized.code)).json({
+        ok: false,
+        taskId: null,
+        ...normalized,
         attemptedUrl: `${SUNO_BASE_URL}${SUNO_CREATE_PATH}`,
-        sentPayload: payload,
-        upstream: data
+        sentPayload: payload
       });
     }
 
     const taskId = extractTaskId(data);
 
-    res.json({
+    return res.json({
       ok: true,
       taskId,
       upstream: data
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
+      ok: false,
+      taskId: null,
       error: error.message || 'Unknown server error'
     });
   }
@@ -209,7 +303,7 @@ app.get('/api/song-status/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) {
-      return res.status(400).json({ error: 'Missing task id' });
+      return res.status(400).json({ ok: false, error: 'Missing task id' });
     }
 
     if (callbackStore.has(id)) {
@@ -224,43 +318,68 @@ app.get('/api/song-status/:id', async (req, res) => {
       });
     }
 
-    const candidateUrls = [
-      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
-      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?id=${encodeURIComponent(id)}`,
-      `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?recordId=${encodeURIComponent(id)}`
-    ];
+    const result = await fetchSunoStatusById(id);
 
-    let lastData = null;
-    let lastStatus = 500;
-
-    for (const candidate of candidateUrls) {
-      const response = await fetch(candidate, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
+    if (result.ok) {
+      return res.json({
+        ok: true,
+        taskId: id,
+        status: extractStatus(result.data),
+        audioUrl: extractAudioUrl(result.data),
+        tracks: extractAudioTracks(result.data),
+        upstream: result.data
       });
-
-      const data = await response.json().catch(async () => ({ raw: await response.text() }));
-      lastData = data;
-      lastStatus = response.status;
-
-      if (response.ok) {
-        return res.json({
-          ok: true,
-          taskId: id,
-          status: extractStatus(data),
-          audioUrl: extractAudioUrl(data),
-          tracks: extractAudioTracks(data),
-          upstream: data
-        });
-      }
     }
 
-    return res.status(lastStatus).json({
+    return res.status(result.statusCode).json({
+      ok: false,
       error: 'Suno status request failed',
-      upstream: lastData
+      upstream: result.data
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
+      ok: false,
+      error: error.message || 'Unknown server error'
+    });
+  }
+});
+
+app.get('/api/song-tracks/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ ok: false, error: 'Missing task id' });
+    }
+
+    if (callbackStore.has(id)) {
+      const cb = callbackStore.get(id);
+      return res.json({
+        ok: true,
+        taskId: id,
+        tracks: extractAudioTracks(cb),
+        upstream: cb
+      });
+    }
+
+    const result = await fetchSunoStatusById(id);
+
+    if (result.ok) {
+      return res.json({
+        ok: true,
+        taskId: id,
+        tracks: extractAudioTracks(result.data),
+        upstream: result.data
+      });
+    }
+
+    return res.status(result.statusCode).json({
+      ok: false,
+      error: 'Suno track request failed',
+      upstream: result.data
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
       error: error.message || 'Unknown server error'
     });
   }
