@@ -1,7 +1,6 @@
 {
-  "name": "suno-backend-base3-fixed",
-  "version": "1.0.1",
-  "private": true,
+  "name": "suno-backend",
+  "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,8 +9,5 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
