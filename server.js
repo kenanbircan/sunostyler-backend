@@ -7,8 +7,13 @@ const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const SUNO_API_KEY = process.env.SUNO_API_KEY || '';
 const SUNO_BASE_URL = (process.env.SUNO_BASE_URL || 'https://api.sunoapi.org').replace(/\/+$/, '');
+
 const SUNO_CREATE_PATH = process.env.SUNO_CREATE_PATH || '/api/v1/generate';
 const SUNO_STATUS_PATH = process.env.SUNO_STATUS_PATH || '/api/v1/generate/record-info';
+const SUNO_EXTEND_PATH = process.env.SUNO_EXTEND_PATH || '/api/v1/generate/extend';
+const SUNO_UPLOAD_COVER_PATH = process.env.SUNO_UPLOAD_COVER_PATH || '/api/v1/generate/upload-cover';
+const SUNO_UPLOAD_EXTEND_PATH = process.env.SUNO_UPLOAD_EXTEND_PATH || '/api/v1/generate/upload-extend';
+const SUNO_ADD_INSTRUMENTAL_PATH = process.env.SUNO_ADD_INSTRUMENTAL_PATH || '/api/v1/generate/add-instrumental';
 const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
 const SUNO_MODEL = process.env.SUNO_MODEL || 'V5_5';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -61,6 +66,8 @@ const MODEL_LIMITS = {
   }
 };
 
+const ADD_INSTRUMENTAL_MODELS = ['V4_5PLUS', 'V5', 'V5_5'];
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -94,6 +101,17 @@ function cleanString(value, fallback = '') {
   return safeString(value, fallback).replace(/\s+/g, ' ').trim();
 }
 
+function isValidUrl(value) {
+  const str = cleanString(value);
+  if (!str) return false;
+  try {
+    const url = new URL(str);
+    return ['http:', 'https:'].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
 function getModelLimits(model) {
   return MODEL_LIMITS[model] || MODEL_LIMITS[SUNO_MODEL] || MODEL_LIMITS.V5_5;
 }
@@ -104,6 +122,13 @@ function clamp01(value) {
   if (!Number.isFinite(num)) return undefined;
   if (num < 0 || num > 1) return undefined;
   return Math.round(num * 100) / 100;
+}
+
+function parsePositiveNumber(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return undefined;
+  return num;
 }
 
 function truncate(value, max) {
@@ -142,6 +167,35 @@ function extractTaskId(data) {
 }
 
 function extractAudioTracks(data) {
+  const callbackArray = Array.isArray(data?.data?.data) ? data.data.data : null;
+  if (callbackArray) {
+    return callbackArray.map(track => ({
+      id: track?.id || null,
+      audioUrl:
+        track?.audio_url ||
+        track?.audioUrl ||
+        track?.source_audio_url ||
+        track?.sourceAudioUrl ||
+        track?.stream_audio_url ||
+        track?.streamAudioUrl ||
+        track?.source_stream_audio_url ||
+        track?.sourceStreamAudioUrl ||
+        null,
+      sourceAudioUrl: track?.source_audio_url || track?.sourceAudioUrl || null,
+      streamAudioUrl: track?.stream_audio_url || track?.streamAudioUrl || null,
+      sourceStreamAudioUrl: track?.source_stream_audio_url || track?.sourceStreamAudioUrl || null,
+      imageUrl: track?.image_url || track?.imageUrl || track?.source_image_url || track?.sourceImageUrl || null,
+      sourceImageUrl: track?.source_image_url || track?.sourceImageUrl || null,
+      title: track?.title || 'Untitled',
+      duration: track?.duration || null,
+      modelName: track?.model_name || track?.modelName || null,
+      prompt: track?.prompt || null,
+      tags: track?.tags || null,
+      createTime: track?.createTime || null,
+      lyric: track?.lyric || null
+    }));
+  }
+
   const sunoData =
     data?.data?.response?.sunoData ||
     data?.response?.sunoData ||
@@ -158,15 +212,19 @@ function extractAudioTracks(data) {
       track?.sourceAudioUrl ||
       track?.streamAudioUrl ||
       track?.sourceStreamAudioUrl ||
+      track?.audio_url ||
+      track?.source_audio_url ||
+      track?.stream_audio_url ||
+      track?.source_stream_audio_url ||
       null,
-    sourceAudioUrl: track?.sourceAudioUrl || null,
-    streamAudioUrl: track?.streamAudioUrl || null,
-    sourceStreamAudioUrl: track?.sourceStreamAudioUrl || null,
-    imageUrl: track?.imageUrl || track?.sourceImageUrl || null,
-    sourceImageUrl: track?.sourceImageUrl || null,
+    sourceAudioUrl: track?.sourceAudioUrl || track?.source_audio_url || null,
+    streamAudioUrl: track?.streamAudioUrl || track?.stream_audio_url || null,
+    sourceStreamAudioUrl: track?.sourceStreamAudioUrl || track?.source_stream_audio_url || null,
+    imageUrl: track?.imageUrl || track?.sourceImageUrl || track?.image_url || track?.source_image_url || null,
+    sourceImageUrl: track?.sourceImageUrl || track?.source_image_url || null,
     title: track?.title || 'Untitled',
     duration: track?.duration || null,
-    modelName: track?.modelName || null,
+    modelName: track?.modelName || track?.model_name || null,
     prompt: track?.prompt || null,
     tags: track?.tags || null,
     createTime: track?.createTime || null,
@@ -190,6 +248,20 @@ function extractAudioUrl(data) {
 }
 
 function extractStatus(data) {
+  const callbackType = (
+    data?.data?.callbackType ||
+    data?.callbackType ||
+    data?.data?.callback_type ||
+    data?.callback_type ||
+    ''
+  ).toString().toLowerCase();
+
+  if (callbackType) {
+    if (callbackType === 'complete') return 'completed';
+    if (callbackType === 'error') return 'failed';
+    return callbackType;
+  }
+
   const raw = (
     data?.status ||
     data?.state ||
@@ -211,7 +283,8 @@ function extractStatus(data) {
 
 function normalizeError(responseStatus, data) {
   const upstreamCode = data?.code;
-  const upstreamMsg = data?.msg || data?.message || 'Unknown upstream error';
+  const upstreamMsg = data?.msg || data?.message || data?.error || 'Unknown upstream error';
+  const normalizedMsg = String(upstreamMsg).toLowerCase();
 
   if (responseStatus === 429 || upstreamCode === 429) {
     return {
@@ -261,7 +334,7 @@ function normalizeError(responseStatus, data) {
     };
   }
 
-  if (String(upstreamMsg).toLowerCase().includes('model cannot be null')) {
+  if (normalizedMsg.includes('model cannot be null')) {
     return {
       error: 'Suno model is missing or invalid.',
       code: responseStatus || 400,
@@ -269,10 +342,34 @@ function normalizeError(responseStatus, data) {
     };
   }
 
-  if (String(upstreamMsg).toLowerCase().includes('music style cannot exceed')) {
+  if (normalizedMsg.includes('music style cannot exceed')) {
     return {
       error: 'Suno music style is too long.',
       code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (normalizedMsg.includes('title cannot exceed')) {
+    return {
+      error: 'Suno title is too long.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (normalizedMsg.includes('prompt cannot exceed') || normalizedMsg.includes('theme or prompt too long')) {
+    return {
+      error: 'Suno prompt is too long.',
+      code: responseStatus || 400,
+      upstream: data
+    };
+  }
+
+  if (normalizedMsg.includes('insufficient credits')) {
+    return {
+      error: 'Suno credits are insufficient. Please top up the API account.',
+      code: 429,
       upstream: data
     };
   }
@@ -318,6 +415,41 @@ function validateWeights(body) {
   };
 }
 
+function validateCommonGenerationOptions(body, model) {
+  const errors = [];
+  const limits = getModelLimits(model);
+
+  const personaId = cleanString(body.personaId || '');
+  const personaModel = cleanString(body.personaModel || 'style_persona');
+  const negativeTags = cleanString(body.negativeTags || '');
+  const vocalGender = cleanString(body.vocalGender || '');
+
+  const weightValidation = validateWeights(body);
+  errors.push(...weightValidation.errors);
+
+  if (personaModel && !['style_persona', 'voice_persona'].includes(personaModel)) {
+    errors.push('personaModel must be "style_persona" or "voice_persona".');
+  }
+
+  if (vocalGender && !['m', 'f'].includes(vocalGender)) {
+    errors.push('vocalGender must be "m" or "f".');
+  }
+
+  return {
+    errors,
+    values: {
+      personaId,
+      personaModel,
+      negativeTags,
+      vocalGender,
+      styleWeight: weightValidation.styleWeight,
+      weirdnessConstraint: weightValidation.weirdnessConstraint,
+      audioWeight: weightValidation.audioWeight,
+      limits
+    }
+  };
+}
+
 function validateCreateSongRequest(body) {
   const customMode = body.customMode !== undefined ? Boolean(body.customMode) : true;
   const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
@@ -327,8 +459,7 @@ function validateCreateSongRequest(body) {
   const title = cleanString(body.title || 'Untitled Song');
   const prompt = safeString(body.prompt || '').trim();
   const lyrics = safeString(body.lyrics || '').trim();
-  const explicitStyle = cleanString(body.style || '');
-  const style = explicitStyle;
+  const style = cleanString(body.style || '');
 
   const errors = [];
 
@@ -372,21 +503,8 @@ function validateCreateSongRequest(body) {
     }
   }
 
-  const weightValidation = validateWeights(body);
-  errors.push(...weightValidation.errors);
-
-  const personaId = cleanString(body.personaId || '');
-  const personaModel = cleanString(body.personaModel || 'style_persona');
-  const negativeTags = cleanString(body.negativeTags || '');
-  const vocalGender = cleanString(body.vocalGender || '');
-
-  if (personaModel && !['style_persona', 'voice_persona'].includes(personaModel)) {
-    errors.push('personaModel must be "style_persona" or "voice_persona".');
-  }
-
-  if (vocalGender && !['m', 'f'].includes(vocalGender)) {
-    errors.push('vocalGender must be "m" or "f".');
-  }
+  const commonValidation = validateCommonGenerationOptions(body, model);
+  errors.push(...commonValidation.errors);
 
   return {
     ok: errors.length === 0,
@@ -399,14 +517,293 @@ function validateCreateSongRequest(body) {
       prompt,
       lyrics,
       style,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight: weightValidation.styleWeight,
-      weirdnessConstraint: weightValidation.weirdnessConstraint,
-      audioWeight: weightValidation.audioWeight,
+      personaId: commonValidation.values.personaId,
+      personaModel: commonValidation.values.personaModel,
+      negativeTags: commonValidation.values.negativeTags,
+      vocalGender: commonValidation.values.vocalGender,
+      styleWeight: commonValidation.values.styleWeight,
+      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
+      audioWeight: commonValidation.values.audioWeight,
       limits
+    }
+  };
+}
+
+function validateExtendSongRequest(body) {
+  const defaultParamFlag = body.defaultParamFlag !== undefined ? Boolean(body.defaultParamFlag) : false;
+  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
+  const model = cleanString(body.model || SUNO_MODEL);
+  const title = cleanString(body.title || 'Untitled Extension');
+  const prompt = safeString(body.prompt || '').trim();
+  const style = cleanString(body.style || '');
+  const audioId = cleanString(body.audioId || '');
+  const continueAt = parsePositiveNumber(body.continueAt);
+
+  const errors = [];
+  if (!MODEL_LIMITS[model]) {
+    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  }
+  if (!audioId) {
+    errors.push('audioId is required.');
+  }
+
+  const limits = getModelLimits(model);
+
+  if (defaultParamFlag) {
+    if (!prompt) {
+      errors.push('prompt is required when defaultParamFlag is true.');
+    }
+    if (!style) {
+      errors.push('style is required when defaultParamFlag is true.');
+    }
+    if (!title) {
+      errors.push('title is required when defaultParamFlag is true.');
+    }
+    if (continueAt === undefined) {
+      errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
+    }
+
+    if (prompt.length > limits.promptMax) {
+      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    }
+    if (style.length > limits.styleMax) {
+      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    }
+    if (title.length > limits.titleMax) {
+      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+    }
+  }
+
+  const commonValidation = validateCommonGenerationOptions(body, model);
+  errors.push(...commonValidation.errors);
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    values: {
+      defaultParamFlag,
+      instrumental,
+      model,
+      audioId,
+      prompt,
+      style,
+      title,
+      continueAt,
+      personaId: commonValidation.values.personaId,
+      personaModel: commonValidation.values.personaModel,
+      negativeTags: commonValidation.values.negativeTags,
+      vocalGender: commonValidation.values.vocalGender,
+      styleWeight: commonValidation.values.styleWeight,
+      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
+      audioWeight: commonValidation.values.audioWeight
+    }
+  };
+}
+
+function validateUploadCoverRequest(body) {
+  const customMode = body.customMode !== undefined ? Boolean(body.customMode) : true;
+  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
+  const model = cleanString(body.model || SUNO_MODEL);
+  const uploadUrl = cleanString(body.uploadUrl || '');
+  const prompt = safeString(body.prompt || '').trim();
+  const style = cleanString(body.style || '');
+  const title = cleanString(body.title || 'Untitled Cover');
+
+  const errors = [];
+  if (!MODEL_LIMITS[model]) {
+    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  }
+  if (!isValidUrl(uploadUrl)) {
+    errors.push('uploadUrl must be a valid public http or https URL.');
+  }
+
+  const limits = getModelLimits(model);
+
+  if (customMode) {
+    if (!style) {
+      errors.push('style is required when customMode is true.');
+    }
+    if (!title) {
+      errors.push('title is required when customMode is true.');
+    }
+    if (style.length > limits.styleMax) {
+      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    }
+    if (title.length > limits.titleMax) {
+      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+    }
+
+    if (!instrumental) {
+      if (!prompt) {
+        errors.push('prompt is required when customMode is true and instrumental is false.');
+      }
+      if (prompt.length > limits.promptMax) {
+        errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+      }
+    }
+  } else {
+    if (!prompt) {
+      errors.push('prompt is required when customMode is false.');
+    }
+    if (prompt.length > 500) {
+      errors.push('prompt must be 500 characters or fewer when customMode is false.');
+    }
+  }
+
+  const commonValidation = validateCommonGenerationOptions(body, model);
+  errors.push(...commonValidation.errors);
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    values: {
+      uploadUrl,
+      customMode,
+      instrumental,
+      model,
+      prompt,
+      style,
+      title,
+      personaId: commonValidation.values.personaId,
+      personaModel: commonValidation.values.personaModel,
+      negativeTags: commonValidation.values.negativeTags,
+      vocalGender: commonValidation.values.vocalGender,
+      styleWeight: commonValidation.values.styleWeight,
+      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
+      audioWeight: commonValidation.values.audioWeight
+    }
+  };
+}
+
+function validateUploadExtendRequest(body) {
+  const defaultParamFlag = body.defaultParamFlag !== undefined ? Boolean(body.defaultParamFlag) : true;
+  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
+  const model = cleanString(body.model || SUNO_MODEL);
+  const uploadUrl = cleanString(body.uploadUrl || '');
+  const prompt = safeString(body.prompt || '').trim();
+  const style = cleanString(body.style || '');
+  const title = cleanString(body.title || 'Untitled Upload Extension');
+  const continueAt = parsePositiveNumber(body.continueAt);
+
+  const errors = [];
+  if (!MODEL_LIMITS[model]) {
+    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  }
+  if (!isValidUrl(uploadUrl)) {
+    errors.push('uploadUrl must be a valid public http or https URL.');
+  }
+
+  const limits = getModelLimits(model);
+
+  if (defaultParamFlag) {
+    if (!style) {
+      errors.push('style is required when defaultParamFlag is true.');
+    }
+    if (!title) {
+      errors.push('title is required when defaultParamFlag is true.');
+    }
+    if (continueAt === undefined) {
+      errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
+    }
+    if (!instrumental && !prompt) {
+      errors.push('prompt is required when defaultParamFlag is true and instrumental is false.');
+    }
+
+    if (prompt.length > limits.promptMax) {
+      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    }
+    if (style.length > limits.styleMax) {
+      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    }
+    if (title.length > limits.titleMax) {
+      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+    }
+  } else {
+    if (!prompt) {
+      errors.push('prompt is required when defaultParamFlag is false.');
+    }
+  }
+
+  const commonValidation = validateCommonGenerationOptions(body, model);
+  errors.push(...commonValidation.errors);
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    values: {
+      uploadUrl,
+      defaultParamFlag,
+      instrumental,
+      model,
+      prompt,
+      style,
+      title,
+      continueAt,
+      personaId: commonValidation.values.personaId,
+      personaModel: commonValidation.values.personaModel,
+      negativeTags: commonValidation.values.negativeTags,
+      vocalGender: commonValidation.values.vocalGender,
+      styleWeight: commonValidation.values.styleWeight,
+      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
+      audioWeight: commonValidation.values.audioWeight
+    }
+  };
+}
+
+function validateAddInstrumentalRequest(body) {
+  const uploadUrl = cleanString(body.uploadUrl || '');
+  const title = cleanString(body.title || 'Untitled Instrumental');
+  const negativeTags = cleanString(body.negativeTags || '');
+  const tags = cleanString(body.tags || '');
+  const vocalGender = cleanString(body.vocalGender || '');
+  const styleWeight = clamp01(body.styleWeight);
+  const weirdnessConstraint = clamp01(body.weirdnessConstraint);
+  const audioWeight = clamp01(body.audioWeight);
+  const model = cleanString(body.model || 'V4_5PLUS');
+
+  const errors = [];
+
+  if (!isValidUrl(uploadUrl)) {
+    errors.push('uploadUrl must be a valid public http or https URL.');
+  }
+  if (!title) {
+    errors.push('title is required.');
+  }
+  if (!negativeTags) {
+    errors.push('negativeTags is required.');
+  }
+  if (!tags) {
+    errors.push('tags is required.');
+  }
+  if (vocalGender && !['m', 'f'].includes(vocalGender)) {
+    errors.push('vocalGender must be "m" or "f".');
+  }
+  if (!ADD_INSTRUMENTAL_MODELS.includes(model)) {
+    errors.push(`Unsupported model "${model}". Supported models: ${ADD_INSTRUMENTAL_MODELS.join(', ')}`);
+  }
+  if (body.styleWeight !== undefined && styleWeight === undefined) {
+    errors.push('styleWeight must be a number between 0 and 1.');
+  }
+  if (body.weirdnessConstraint !== undefined && weirdnessConstraint === undefined) {
+    errors.push('weirdnessConstraint must be a number between 0 and 1.');
+  }
+  if (body.audioWeight !== undefined && audioWeight === undefined) {
+    errors.push('audioWeight must be a number between 0 and 1.');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    values: {
+      uploadUrl,
+      title,
+      negativeTags,
+      tags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight,
+      model
     }
   };
 }
@@ -481,10 +878,68 @@ async function fetchSunoStatusById(id) {
 }
 
 function sanitizePayloadForLog(payload) {
+  const copy = { ...payload };
+  if (copy.prompt) copy.prompt = `[${copy.prompt.length} chars] ${copy.prompt.slice(0, 120)}`;
+  if (copy.style) copy.style = `[${copy.style.length} chars] ${copy.style.slice(0, 120)}`;
+  if (copy.tags) copy.tags = `[${copy.tags.length} chars] ${copy.tags.slice(0, 120)}`;
+  if (copy.uploadUrl) copy.uploadUrl = '[redacted-url]';
+  return copy;
+}
+
+function stripEmptyFields(payload) {
+  const out = { ...payload };
+  Object.keys(out).forEach(key => {
+    if (out[key] === undefined || out[key] === '') {
+      delete out[key];
+    }
+  });
+  return out;
+}
+
+async function performSunoPost({ path, payload, requestId, actionName }) {
+  log(`[${actionName} REQUEST]`, requestId, sanitizePayloadForLog(payload));
+
+  const response = await fetchWithTimeout(`${SUNO_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(payload)
+  });
+
+  const data = await parseResponseBody(response);
+
+  log(`[${actionName} RESPONSE]`, requestId, {
+    status: response.status,
+    body: data
+  });
+
+  if (!response.ok || (data?.code && data.code !== 200)) {
+    const normalized = normalizeError(response.status, data);
+    return {
+      ok: false,
+      statusCode: normalized.code === 429 ? 200 : (response.status || normalized.code),
+      body: {
+        ok: false,
+        requestId,
+        taskId: null,
+        ...normalized,
+        attemptedUrl: `${SUNO_BASE_URL}${path}`,
+        sentPayload: payload
+      }
+    };
+  }
+
+  const taskId = extractTaskId(data);
+
   return {
-    ...payload,
-    prompt: payload.prompt ? `[${payload.prompt.length} chars] ${payload.prompt.slice(0, 120)}` : '',
-    style: payload.style ? `[${payload.style.length} chars] ${payload.style.slice(0, 120)}` : ''
+    ok: true,
+    statusCode: 200,
+    body: {
+      ok: true,
+      requestId,
+      taskId,
+      status: 'submitted',
+      upstream: data
+    }
   };
 }
 
@@ -495,8 +950,13 @@ app.get('/api/health', (_req, res) => {
     time: nowIso(),
     createPath: SUNO_CREATE_PATH,
     statusPath: SUNO_STATUS_PATH,
+    extendPath: SUNO_EXTEND_PATH,
+    uploadCoverPath: SUNO_UPLOAD_COVER_PATH,
+    uploadExtendPath: SUNO_UPLOAD_EXTEND_PATH,
+    addInstrumentalPath: SUNO_ADD_INSTRUMENTAL_PATH,
     defaultModel: SUNO_MODEL,
     supportedModels: Object.keys(MODEL_LIMITS),
+    addInstrumentalModels: ADD_INSTRUMENTAL_MODELS,
     hasApiKey: Boolean(SUNO_API_KEY),
     hasCallbackUrl: Boolean(SUNO_CALLBACK_URL)
   });
@@ -506,7 +966,8 @@ app.get('/api/models', (_req, res) => {
   res.json({
     ok: true,
     defaultModel: SUNO_MODEL,
-    models: MODEL_LIMITS
+    models: MODEL_LIMITS,
+    addInstrumentalModels: ADD_INSTRUMENTAL_MODELS
   });
 });
 
@@ -604,53 +1065,327 @@ app.post('/api/create-song', async (req, res) => {
         payload.prompt = prompt || lyrics;
       }
     } else {
-      payload.prompt = (prompt || lyrics || '').slice(0, 500);
+      payload.prompt = truncate(prompt || lyrics || '', 500);
       delete payload.title;
       delete payload.style;
     }
 
-    Object.keys(payload).forEach(key => {
-      if (payload[key] === undefined || payload[key] === '') {
-        delete payload[key];
-      }
+    const result = await performSunoPost({
+      path: SUNO_CREATE_PATH,
+      payload: stripEmptyFields(payload),
+      requestId,
+      actionName: 'CREATE SONG'
     });
 
-    log('[CREATE SONG REQUEST]', requestId, sanitizePayloadForLog(payload));
-
-    const response = await fetchWithTimeout(`${SUNO_BASE_URL}${SUNO_CREATE_PATH}`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify(payload)
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 500).json({
+      ok: false,
+      requestId,
+      taskId: null,
+      error: isAbort
+        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : (error.message || 'Unknown server error')
     });
+  }
+});
 
-    const data = await parseResponseBody(response);
+app.post('/api/extend-song', async (req, res) => {
+  const requestId = createRequestId();
 
-    log('[CREATE SONG RESPONSE]', requestId, {
-      status: response.status,
-      body: data
-    });
-
-    if (!response.ok || (data?.code && data.code !== 200)) {
-      const normalized = normalizeError(response.status, data);
-      return res.status(normalized.code === 429 ? 200 : (response.status || normalized.code)).json({
+  try {
+    const validation = validateExtendSongRequest(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({
         ok: false,
         requestId,
-        taskId: null,
-        ...normalized,
-        attemptedUrl: `${SUNO_BASE_URL}${SUNO_CREATE_PATH}`,
-        sentPayload: payload
+        error: 'Validation failed.',
+        details: validation.errors
       });
     }
 
-    const taskId = extractTaskId(data);
+    const {
+      defaultParamFlag,
+      instrumental,
+      model,
+      audioId,
+      prompt,
+      style,
+      title,
+      continueAt,
+      personaId,
+      personaModel,
+      negativeTags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    } = validation.values;
 
-    return res.json({
-      ok: true,
-      requestId,
-      taskId,
-      status: 'submitted',
-      upstream: data
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({
+        ok: false,
+        requestId,
+        error: 'Missing SUNO_CALLBACK_URL'
+      });
+    }
+
+    const payload = stripEmptyFields({
+      defaultParamFlag,
+      audioId,
+      model,
+      callBackUrl: SUNO_CALLBACK_URL,
+      instrumental,
+      prompt: defaultParamFlag ? prompt : undefined,
+      style: defaultParamFlag ? style : undefined,
+      title: defaultParamFlag ? title : undefined,
+      continueAt: defaultParamFlag ? continueAt : undefined,
+      personaId: personaId || undefined,
+      personaModel: personaId ? personaModel : undefined,
+      negativeTags: negativeTags || undefined,
+      vocalGender: vocalGender || undefined,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
     });
+
+    const result = await performSunoPost({
+      path: SUNO_EXTEND_PATH,
+      payload,
+      requestId,
+      actionName: 'EXTEND SONG'
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 500).json({
+      ok: false,
+      requestId,
+      taskId: null,
+      error: isAbort
+        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : (error.message || 'Unknown server error')
+    });
+  }
+});
+
+app.post('/api/upload-cover', async (req, res) => {
+  const requestId = createRequestId();
+
+  try {
+    const validation = validateUploadCoverRequest(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        requestId,
+        error: 'Validation failed.',
+        details: validation.errors
+      });
+    }
+
+    const {
+      uploadUrl,
+      customMode,
+      instrumental,
+      model,
+      prompt,
+      style,
+      title,
+      personaId,
+      personaModel,
+      negativeTags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    } = validation.values;
+
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({
+        ok: false,
+        requestId,
+        error: 'Missing SUNO_CALLBACK_URL'
+      });
+    }
+
+    const payload = stripEmptyFields({
+      uploadUrl,
+      customMode,
+      instrumental,
+      model,
+      callBackUrl: SUNO_CALLBACK_URL,
+      prompt: customMode
+        ? (!instrumental ? prompt : undefined)
+        : truncate(prompt, 500),
+      style: customMode ? style : undefined,
+      title: customMode ? title : undefined,
+      personaId: personaId || undefined,
+      personaModel: personaId ? personaModel : undefined,
+      negativeTags: negativeTags || undefined,
+      vocalGender: vocalGender || undefined,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    });
+
+    const result = await performSunoPost({
+      path: SUNO_UPLOAD_COVER_PATH,
+      payload,
+      requestId,
+      actionName: 'UPLOAD COVER'
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 500).json({
+      ok: false,
+      requestId,
+      taskId: null,
+      error: isAbort
+        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : (error.message || 'Unknown server error')
+    });
+  }
+});
+
+app.post('/api/upload-extend', async (req, res) => {
+  const requestId = createRequestId();
+
+  try {
+    const validation = validateUploadExtendRequest(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        requestId,
+        error: 'Validation failed.',
+        details: validation.errors
+      });
+    }
+
+    const {
+      uploadUrl,
+      defaultParamFlag,
+      instrumental,
+      model,
+      prompt,
+      style,
+      title,
+      continueAt,
+      personaId,
+      personaModel,
+      negativeTags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    } = validation.values;
+
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({
+        ok: false,
+        requestId,
+        error: 'Missing SUNO_CALLBACK_URL'
+      });
+    }
+
+    const payload = stripEmptyFields({
+      uploadUrl,
+      defaultParamFlag,
+      instrumental,
+      model,
+      callBackUrl: SUNO_CALLBACK_URL,
+      prompt,
+      style: defaultParamFlag ? style : undefined,
+      title: defaultParamFlag ? title : undefined,
+      continueAt: defaultParamFlag ? continueAt : undefined,
+      personaId: personaId || undefined,
+      personaModel: personaId ? personaModel : undefined,
+      negativeTags: negativeTags || undefined,
+      vocalGender: vocalGender || undefined,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    });
+
+    const result = await performSunoPost({
+      path: SUNO_UPLOAD_EXTEND_PATH,
+      payload,
+      requestId,
+      actionName: 'UPLOAD EXTEND'
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 500).json({
+      ok: false,
+      requestId,
+      taskId: null,
+      error: isAbort
+        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : (error.message || 'Unknown server error')
+    });
+  }
+});
+
+app.post('/api/add-instrumental', async (req, res) => {
+  const requestId = createRequestId();
+
+  try {
+    const validation = validateAddInstrumentalRequest(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        requestId,
+        error: 'Validation failed.',
+        details: validation.errors
+      });
+    }
+
+    const {
+      uploadUrl,
+      title,
+      negativeTags,
+      tags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight,
+      model
+    } = validation.values;
+
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({
+        ok: false,
+        requestId,
+        error: 'Missing SUNO_CALLBACK_URL'
+      });
+    }
+
+    const payload = stripEmptyFields({
+      uploadUrl,
+      title,
+      negativeTags,
+      tags,
+      callBackUrl: SUNO_CALLBACK_URL,
+      vocalGender: vocalGender || undefined,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight,
+      model
+    });
+
+    const result = await performSunoPost({
+      path: SUNO_ADD_INSTRUMENTAL_PATH,
+      payload,
+      requestId,
+      actionName: 'ADD INSTRUMENTAL'
+    });
+
+    return res.status(result.statusCode).json(result.body);
   } catch (error) {
     const isAbort = error?.name === 'AbortError';
     return res.status(isAbort ? 504 : 500).json({
