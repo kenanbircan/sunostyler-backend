@@ -14,6 +14,7 @@ const SUNO_EXTEND_PATH = process.env.SUNO_EXTEND_PATH || '/api/v1/generate/exten
 const SUNO_UPLOAD_COVER_PATH = process.env.SUNO_UPLOAD_COVER_PATH || '/api/v1/generate/upload-cover';
 const SUNO_UPLOAD_EXTEND_PATH = process.env.SUNO_UPLOAD_EXTEND_PATH || '/api/v1/generate/upload-extend';
 const SUNO_ADD_INSTRUMENTAL_PATH = process.env.SUNO_ADD_INSTRUMENTAL_PATH || '/api/v1/generate/add-instrumental';
+const SUNO_REMIX_PATH = process.env.SUNO_REMIX_PATH || SUNO_UPLOAD_COVER_PATH;
 const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
 const SUNO_MODEL = process.env.SUNO_MODEL || 'V5_5';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -808,13 +809,15 @@ function validateAddInstrumentalRequest(body) {
   };
 }
 
+
 function validateRemixRequest(body) {
+  const customMode = body.customMode !== undefined ? Boolean(body.customMode) : true;
+  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
   const model = cleanString(body.model || SUNO_MODEL);
   const uploadUrl = cleanString(body.uploadUrl || '');
   const prompt = safeString(body.prompt || '').trim();
   const style = cleanString(body.style || '');
   const title = cleanString(body.title || 'Remix Track');
-  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
 
   const errors = [];
 
@@ -826,26 +829,35 @@ function validateRemixRequest(body) {
     errors.push('uploadUrl must be a valid public http or https URL.');
   }
 
-  if (!style) {
-    errors.push('style is required for remix.');
-  }
-
   const limits = getModelLimits(model);
 
-  if (style.length > limits.styleMax) {
-    errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-  }
-
-  if (title.length > limits.titleMax) {
-    errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-  }
-
-  if (!instrumental) {
-    if (!prompt) {
-      errors.push('prompt is required for remix when instrumental is false.');
+  if (customMode) {
+    if (!style) {
+      errors.push('style is required when customMode is true.');
     }
-    if (prompt.length > limits.promptMax) {
-      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    if (!title) {
+      errors.push('title is required when customMode is true.');
+    }
+    if (style.length > limits.styleMax) {
+      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    }
+    if (title.length > limits.titleMax) {
+      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+    }
+    if (!instrumental) {
+      if (!prompt) {
+        errors.push('prompt is required when customMode is true and instrumental is false.');
+      }
+      if (prompt.length > limits.promptMax) {
+        errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+      }
+    }
+  } else {
+    if (!prompt) {
+      errors.push('prompt is required when customMode is false.');
+    }
+    if (prompt.length > 500) {
+      errors.push('prompt must be 500 characters or fewer when customMode is false.');
     }
   }
 
@@ -857,11 +869,12 @@ function validateRemixRequest(body) {
     errors,
     values: {
       uploadUrl,
+      customMode,
+      instrumental,
       model,
       prompt,
       style,
       title,
-      instrumental,
       personaId: commonValidation.values.personaId,
       personaModel: commonValidation.values.personaModel,
       negativeTags: commonValidation.values.negativeTags,
@@ -1019,6 +1032,7 @@ app.get('/api/health', (_req, res) => {
     uploadCoverPath: SUNO_UPLOAD_COVER_PATH,
     uploadExtendPath: SUNO_UPLOAD_EXTEND_PATH,
     addInstrumentalPath: SUNO_ADD_INSTRUMENTAL_PATH,
+    remixPath: SUNO_REMIX_PATH,
     defaultModel: SUNO_MODEL,
     supportedModels: Object.keys(MODEL_LIMITS),
     addInstrumentalModels: ADD_INSTRUMENTAL_MODELS,
@@ -1464,6 +1478,7 @@ app.post('/api/add-instrumental', async (req, res) => {
   }
 });
 
+
 app.post('/api/remix-song', async (req, res) => {
   const requestId = createRequestId();
 
@@ -1480,11 +1495,12 @@ app.post('/api/remix-song', async (req, res) => {
 
     const {
       uploadUrl,
+      customMode,
+      instrumental,
       model,
       prompt,
       style,
       title,
-      instrumental,
       personaId,
       personaModel,
       negativeTags,
@@ -1504,13 +1520,15 @@ app.post('/api/remix-song', async (req, res) => {
 
     const payload = stripEmptyFields({
       uploadUrl,
-      customMode: true,
+      customMode,
       instrumental,
       model,
       callBackUrl: SUNO_CALLBACK_URL,
-      prompt: !instrumental ? prompt : undefined,
-      style,
-      title,
+      prompt: customMode
+        ? (!instrumental ? prompt : undefined)
+        : truncate(prompt, 500),
+      style: customMode ? style : undefined,
+      title: customMode ? title : undefined,
       personaId: personaId || undefined,
       personaModel: personaId ? personaModel : undefined,
       negativeTags: negativeTags || undefined,
@@ -1521,7 +1539,7 @@ app.post('/api/remix-song', async (req, res) => {
     });
 
     const result = await performSunoPost({
-      path: SUNO_UPLOAD_COVER_PATH,
+      path: SUNO_REMIX_PATH,
       payload,
       requestId,
       actionName: 'REMIX SONG'
