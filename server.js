@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -15,6 +16,28 @@ const SUNO_UPLOAD_COVER_PATH = process.env.SUNO_UPLOAD_COVER_PATH || '/api/v1/ge
 const SUNO_UPLOAD_EXTEND_PATH = process.env.SUNO_UPLOAD_EXTEND_PATH || '/api/v1/generate/upload-extend';
 const SUNO_ADD_INSTRUMENTAL_PATH = process.env.SUNO_ADD_INSTRUMENTAL_PATH || '/api/v1/generate/add-instrumental';
 const SUNO_REMIX_PATH = process.env.SUNO_REMIX_PATH || SUNO_UPLOAD_COVER_PATH;
+
+const SUNO_ADD_VOCALS_PATH = process.env.SUNO_ADD_VOCALS_PATH || '/api/v1/generate/add-vocals';
+const SUNO_GENERATE_PERSONA_PATH = process.env.SUNO_GENERATE_PERSONA_PATH || '/api/v1/generate/generate-persona';
+const SUNO_MASHUP_PATH = process.env.SUNO_MASHUP_PATH || '/api/v1/generate/mashup';
+const SUNO_LYRICS_PATH = process.env.SUNO_LYRICS_PATH || '/api/v1/lyrics';
+const SUNO_LYRICS_STATUS_PATH = process.env.SUNO_LYRICS_STATUS_PATH || '/api/v1/lyrics/record-info';
+const SUNO_SOUNDS_PATH = process.env.SUNO_SOUNDS_PATH || '/api/v1/generate/sounds';
+const SUNO_WAV_GENERATE_PATH = process.env.SUNO_WAV_GENERATE_PATH || '/api/v1/wav/generate';
+const SUNO_WAV_STATUS_PATH = process.env.SUNO_WAV_STATUS_PATH || '/api/v1/wav/record-info';
+const SUNO_VOCAL_REMOVAL_PATH = process.env.SUNO_VOCAL_REMOVAL_PATH || '/api/v1/vocal-removal/generate';
+const SUNO_VOCAL_REMOVAL_STATUS_PATH = process.env.SUNO_VOCAL_REMOVAL_STATUS_PATH || '/api/v1/vocal-removal/record-info';
+const SUNO_MIDI_GENERATE_PATH = process.env.SUNO_MIDI_GENERATE_PATH || '/api/v1/midi/generate';
+const SUNO_MIDI_STATUS_PATH = process.env.SUNO_MIDI_STATUS_PATH || '/api/v1/midi/record-info';
+const SUNO_MP4_GENERATE_PATH = process.env.SUNO_MP4_GENERATE_PATH || '/api/v1/mp4/generate';
+const SUNO_MP4_STATUS_PATH = process.env.SUNO_MP4_STATUS_PATH || '/api/v1/mp4/record-info';
+const SUNO_STYLE_BOOST_PATH = process.env.SUNO_STYLE_BOOST_PATH || '/api/v1/style/generate';
+const SUNO_MUSIC_COVER_PATH = process.env.SUNO_MUSIC_COVER_PATH || '/api/v1/suno/cover/generate';
+const SUNO_MUSIC_COVER_STATUS_PATH = process.env.SUNO_MUSIC_COVER_STATUS_PATH || '/api/v1/suno/cover/record-info';
+const SUNO_REPLACE_SECTION_PATH = process.env.SUNO_REPLACE_SECTION_PATH || '/api/v1/generate/replace-section';
+const SUNO_TIMESTAMPED_LYRICS_PATH = process.env.SUNO_TIMESTAMPED_LYRICS_PATH || '/api/v1/generate/get-timestamped-lyrics';
+const SUNO_CREDITS_PATH = process.env.SUNO_CREDITS_PATH || '/api/v1/generate/credit';
+
 const SUNO_CALLBACK_URL = process.env.SUNO_CALLBACK_URL || '';
 const SUNO_MODEL = process.env.SUNO_MODEL || 'V5_5';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -35,48 +58,23 @@ app.use(express.json({ limit: JSON_BODY_LIMIT }));
 const callbackStore = new Map();
 
 const MODEL_LIMITS = {
-  V4: {
-    promptMax: 3000,
-    styleMax: 200,
-    titleMax: 80
-  },
-  V4_5: {
-    promptMax: 5000,
-    styleMax: 1000,
-    titleMax: 100
-  },
-  V4_5PLUS: {
-    promptMax: 5000,
-    styleMax: 1000,
-    titleMax: 100
-  },
-  V4_5ALL: {
-    promptMax: 5000,
-    styleMax: 1000,
-    titleMax: 80
-  },
-  V5: {
-    promptMax: 5000,
-    styleMax: 1000,
-    titleMax: 100
-  },
-  V5_5: {
-    promptMax: 5000,
-    styleMax: 1000,
-    titleMax: 100
-  }
+  V4: { promptMax: 3000, styleMax: 200, titleMax: 80 },
+  V4_5: { promptMax: 5000, styleMax: 1000, titleMax: 100 },
+  V4_5PLUS: { promptMax: 5000, styleMax: 1000, titleMax: 100 },
+  V4_5ALL: { promptMax: 5000, styleMax: 1000, titleMax: 80 },
+  V5: { promptMax: 5000, styleMax: 1000, titleMax: 100 },
+  V5_5: { promptMax: 5000, styleMax: 1000, titleMax: 100 }
 };
 
 const ADD_INSTRUMENTAL_MODELS = ['V4_5PLUS', 'V5', 'V5_5'];
+const SEPARATION_TYPES = ['separate_vocal', 'split_stem'];
 
 function nowIso() {
   return new Date().toISOString();
 }
 
 function log(...args) {
-  if (ENABLE_VERBOSE_LOGS) {
-    console.log(...args);
-  }
+  if (ENABLE_VERBOSE_LOGS) console.log(...args);
 }
 
 function createRequestId() {
@@ -84,10 +82,7 @@ function createRequestId() {
 }
 
 function authHeaders() {
-  if (!SUNO_API_KEY) {
-    throw new Error('Missing SUNO_API_KEY');
-  }
-
+  if (!SUNO_API_KEY) throw new Error('Missing SUNO_API_KEY');
   return {
     Authorization: `Bearer ${SUNO_API_KEY}`,
     'Content-Type': 'application/json'
@@ -120,9 +115,15 @@ function getModelLimits(model) {
 function clamp01(value) {
   if (value === undefined || value === null || value === '') return undefined;
   const num = Number(value);
-  if (!Number.isFinite(num)) return undefined;
-  if (num < 0 || num > 1) return undefined;
+  if (!Number.isFinite(num) || num < 0 || num > 1) return undefined;
   return Math.round(num * 100) / 100;
+}
+
+function parseNonNegativeNumber(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return undefined;
+  return num;
 }
 
 function parsePositiveNumber(value) {
@@ -142,9 +143,7 @@ function cleanupCallbackStore() {
   const cutoff = Date.now() - CALLBACK_TTL_MS;
   for (const [key, value] of callbackStore.entries()) {
     const createdAt = Number(value?._storedAt || 0);
-    if (createdAt && createdAt < cutoff) {
-      callbackStore.delete(key);
-    }
+    if (createdAt && createdAt < cutoff) callbackStore.delete(key);
   }
 }
 
@@ -244,6 +243,10 @@ function extractAudioUrl(data) {
     data?.data?.audio_url ||
     data?.data?.sourceAudioUrl ||
     data?.data?.source_audio_url ||
+    data?.data?.audioWavUrl ||
+    data?.audioWavUrl ||
+    data?.data?.video_url ||
+    data?.video_url ||
     null
   );
 }
@@ -275,10 +278,6 @@ function extractStatus(data) {
   if (extractAudioTracks(data).length > 0 || extractAudioUrl(data)) return 'completed';
   if (['complete', 'completed', 'success', 'succeeded', 'done'].includes(raw)) return 'completed';
   if (['failed', 'error', 'failure'].includes(raw)) return 'failed';
-  if (['text', 'first', 'complete'].includes(raw)) {
-    if (raw === 'complete') return 'completed';
-    return raw;
-  }
   return raw || 'processing';
 }
 
@@ -288,106 +287,45 @@ function normalizeError(responseStatus, data) {
   const normalizedMsg = String(upstreamMsg).toLowerCase();
 
   if (responseStatus === 429 || upstreamCode === 429) {
-    return {
-      error: 'Suno credits are insufficient. Please top up the API account.',
-      code: 429,
-      upstream: data
-    };
+    return { error: 'Suno credits are insufficient. Please top up the API account.', code: 429, upstream: data };
   }
-
   if (responseStatus === 430 || upstreamCode === 430) {
-    return {
-      error: 'Suno request frequency is too high. Please retry shortly.',
-      code: 430,
-      upstream: data
-    };
+    return { error: 'Suno request frequency is too high. Please retry shortly.', code: 430, upstream: data };
   }
-
   if (responseStatus === 455 || upstreamCode === 455) {
-    return {
-      error: 'Suno is under maintenance.',
-      code: 455,
-      upstream: data
-    };
+    return { error: 'Suno is under maintenance.', code: 455, upstream: data };
   }
-
   if (responseStatus === 405 || upstreamCode === 405) {
-    return {
-      error: 'Suno rate limit exceeded.',
-      code: 405,
-      upstream: data
-    };
+    return { error: 'Suno rate limit exceeded.', code: 405, upstream: data };
   }
-
+  if (responseStatus === 409 || upstreamCode === 409) {
+    return { error: upstreamMsg || 'A record for this request already exists.', code: 409, upstream: data };
+  }
   if (upstreamMsg === 'Please enter callBackUrl.') {
-    return {
-      error: 'Suno callback URL is missing.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno callback URL is missing.', code: responseStatus || 400, upstream: data };
   }
-
   if (upstreamMsg === 'customMode cannot be null') {
-    return {
-      error: 'Suno customMode is missing from the request.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno customMode is missing from the request.', code: responseStatus || 400, upstream: data };
   }
-
   if (normalizedMsg.includes('model cannot be null')) {
-    return {
-      error: 'Suno model is missing or invalid.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno model is missing or invalid.', code: responseStatus || 400, upstream: data };
   }
-
   if (normalizedMsg.includes('music style cannot exceed')) {
-    return {
-      error: 'Suno music style is too long.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno music style is too long.', code: responseStatus || 400, upstream: data };
   }
-
   if (normalizedMsg.includes('title cannot exceed')) {
-    return {
-      error: 'Suno title is too long.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno title is too long.', code: responseStatus || 400, upstream: data };
   }
-
   if (normalizedMsg.includes('prompt cannot exceed') || normalizedMsg.includes('theme or prompt too long')) {
-    return {
-      error: 'Suno prompt is too long.',
-      code: responseStatus || 400,
-      upstream: data
-    };
+    return { error: 'Suno prompt is too long.', code: responseStatus || 400, upstream: data };
   }
-
   if (normalizedMsg.includes('insufficient credits')) {
-    return {
-      error: 'Suno credits are insufficient. Please top up the API account.',
-      code: 429,
-      upstream: data
-    };
+    return { error: 'Suno credits are insufficient. Please top up the API account.', code: 429, upstream: data };
   }
-
   if (responseStatus === 413 || upstreamCode === 413) {
-    return {
-      error: 'Prompt, style, or title is too long for the selected model.',
-      code: 413,
-      upstream: data
-    };
+    return { error: 'Prompt, style, or title is too long for the selected model.', code: 413, upstream: data };
   }
-
-  return {
-    error: 'Suno request failed.',
-    code: responseStatus || 500,
-    upstream: data
-  };
+  return { error: 'Suno request failed.', code: responseStatus || 500, upstream: data };
 }
 
 function validateWeights(body) {
@@ -396,30 +334,15 @@ function validateWeights(body) {
   const weirdnessConstraint = clamp01(body.weirdnessConstraint);
   const audioWeight = clamp01(body.audioWeight);
 
-  if (body.styleWeight !== undefined && styleWeight === undefined) {
-    errors.push('styleWeight must be a number between 0 and 1.');
-  }
+  if (body.styleWeight !== undefined && styleWeight === undefined) errors.push('styleWeight must be a number between 0 and 1.');
+  if (body.weirdnessConstraint !== undefined && weirdnessConstraint === undefined) errors.push('weirdnessConstraint must be a number between 0 and 1.');
+  if (body.audioWeight !== undefined && audioWeight === undefined) errors.push('audioWeight must be a number between 0 and 1.');
 
-  if (body.weirdnessConstraint !== undefined && weirdnessConstraint === undefined) {
-    errors.push('weirdnessConstraint must be a number between 0 and 1.');
-  }
-
-  if (body.audioWeight !== undefined && audioWeight === undefined) {
-    errors.push('audioWeight must be a number between 0 and 1.');
-  }
-
-  return {
-    errors,
-    styleWeight,
-    weirdnessConstraint,
-    audioWeight
-  };
+  return { errors, styleWeight, weirdnessConstraint, audioWeight };
 }
 
 function validateCommonGenerationOptions(body, model) {
   const errors = [];
-  const limits = getModelLimits(model);
-
   const personaId = cleanString(body.personaId || '');
   const personaModel = cleanString(body.personaModel || 'style_persona');
   const negativeTags = cleanString(body.negativeTags || '');
@@ -431,7 +354,6 @@ function validateCommonGenerationOptions(body, model) {
   if (personaModel && !['style_persona', 'voice_persona'].includes(personaModel)) {
     errors.push('personaModel must be "style_persona" or "voice_persona".');
   }
-
   if (vocalGender && !['m', 'f'].includes(vocalGender)) {
     errors.push('vocalGender must be "m" or "f".');
   }
@@ -445,8 +367,7 @@ function validateCommonGenerationOptions(body, model) {
       vocalGender,
       styleWeight: weightValidation.styleWeight,
       weirdnessConstraint: weightValidation.weirdnessConstraint,
-      audioWeight: weightValidation.audioWeight,
-      limits
+      audioWeight: weightValidation.audioWeight
     }
   };
 }
@@ -461,7 +382,6 @@ function validateCreateSongRequest(body) {
   const prompt = safeString(body.prompt || '').trim();
   const lyrics = safeString(body.lyrics || '').trim();
   const style = cleanString(body.style || '');
-
   const errors = [];
 
   if (!MODEL_LIMITS[model]) {
@@ -470,37 +390,19 @@ function validateCreateSongRequest(body) {
 
   if (!customMode) {
     const ideaPrompt = prompt || lyrics;
-    if (!ideaPrompt) {
-      errors.push('prompt is required when customMode is false.');
-    }
-    if (ideaPrompt.length > 500) {
-      errors.push('prompt must be 500 characters or fewer when customMode is false.');
-    }
+    if (!ideaPrompt) errors.push('prompt is required when customMode is false.');
+    if (ideaPrompt.length > 500) errors.push('prompt must be 500 characters or fewer when customMode is false.');
   }
 
   if (customMode) {
-    if (!title) {
-      errors.push('title is required when customMode is true.');
-    }
-    if (title.length > limits.titleMax) {
-      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-    }
-
-    if (!style) {
-      errors.push('style is required when customMode is true.');
-    }
-    if (style.length > limits.styleMax) {
-      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-    }
-
+    if (!title) errors.push('title is required when customMode is true.');
+    if (title.length > limits.titleMax) errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+    if (!style) errors.push('style is required when customMode is true.');
+    if (style.length > limits.styleMax) errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
     if (!instrumental) {
       const effectiveLyrics = prompt || lyrics;
-      if (!effectiveLyrics) {
-        errors.push('prompt or lyrics is required when customMode is true and instrumental is false.');
-      }
-      if (effectiveLyrics.length > limits.promptMax) {
-        errors.push(`prompt/lyrics exceeds ${limits.promptMax} characters for model ${model}.`);
-      }
+      if (!effectiveLyrics) errors.push('prompt or lyrics is required when customMode is true and instrumental is false.');
+      if (effectiveLyrics.length > limits.promptMax) errors.push(`prompt/lyrics exceeds ${limits.promptMax} characters for model ${model}.`);
     }
   }
 
@@ -511,13 +413,7 @@ function validateCreateSongRequest(body) {
     ok: errors.length === 0,
     errors,
     values: {
-      customMode,
-      instrumental,
-      model,
-      title,
-      prompt,
-      lyrics,
-      style,
+      customMode, instrumental, model, title, prompt, lyrics, style,
       personaId: commonValidation.values.personaId,
       personaModel: commonValidation.values.personaModel,
       negativeTags: commonValidation.values.negativeTags,
@@ -541,38 +437,19 @@ function validateExtendSongRequest(body) {
   const continueAt = parsePositiveNumber(body.continueAt);
 
   const errors = [];
-  if (!MODEL_LIMITS[model]) {
-    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
-  }
-  if (!audioId) {
-    errors.push('audioId is required.');
-  }
+  if (!MODEL_LIMITS[model]) errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  if (!audioId) errors.push('audioId is required.');
 
   const limits = getModelLimits(model);
 
   if (defaultParamFlag) {
-    if (!prompt) {
-      errors.push('prompt is required when defaultParamFlag is true.');
-    }
-    if (!style) {
-      errors.push('style is required when defaultParamFlag is true.');
-    }
-    if (!title) {
-      errors.push('title is required when defaultParamFlag is true.');
-    }
-    if (continueAt === undefined) {
-      errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
-    }
-
-    if (prompt.length > limits.promptMax) {
-      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
-    }
-    if (style.length > limits.styleMax) {
-      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-    }
-    if (title.length > limits.titleMax) {
-      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-    }
+    if (!prompt) errors.push('prompt is required when defaultParamFlag is true.');
+    if (!style) errors.push('style is required when defaultParamFlag is true.');
+    if (!title) errors.push('title is required when defaultParamFlag is true.');
+    if (continueAt === undefined) errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
+    if (prompt.length > limits.promptMax) errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    if (style.length > limits.styleMax) errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    if (title.length > limits.titleMax) errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
   }
 
   const commonValidation = validateCommonGenerationOptions(body, model);
@@ -582,14 +459,7 @@ function validateExtendSongRequest(body) {
     ok: errors.length === 0,
     errors,
     values: {
-      defaultParamFlag,
-      instrumental,
-      model,
-      audioId,
-      prompt,
-      style,
-      title,
-      continueAt,
+      defaultParamFlag, instrumental, model, audioId, prompt, style, title, continueAt,
       personaId: commonValidation.values.personaId,
       personaModel: commonValidation.values.personaModel,
       negativeTags: commonValidation.values.negativeTags,
@@ -609,46 +479,24 @@ function validateUploadCoverRequest(body) {
   const prompt = safeString(body.prompt || '').trim();
   const style = cleanString(body.style || '');
   const title = cleanString(body.title || 'Untitled Cover');
-
   const errors = [];
-  if (!MODEL_LIMITS[model]) {
-    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
-  }
-  if (!isValidUrl(uploadUrl)) {
-    errors.push('uploadUrl must be a valid public http or https URL.');
-  }
+  if (!MODEL_LIMITS[model]) errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  if (!isValidUrl(uploadUrl)) errors.push('uploadUrl must be a valid public http or https URL.');
 
   const limits = getModelLimits(model);
 
   if (customMode) {
-    if (!style) {
-      errors.push('style is required when customMode is true.');
-    }
-    if (!title) {
-      errors.push('title is required when customMode is true.');
-    }
-    if (style.length > limits.styleMax) {
-      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-    }
-    if (title.length > limits.titleMax) {
-      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-    }
-
+    if (!style) errors.push('style is required when customMode is true.');
+    if (!title) errors.push('title is required when customMode is true.');
+    if (style.length > limits.styleMax) errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    if (title.length > limits.titleMax) errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
     if (!instrumental) {
-      if (!prompt) {
-        errors.push('prompt is required when customMode is true and instrumental is false.');
-      }
-      if (prompt.length > limits.promptMax) {
-        errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
-      }
+      if (!prompt) errors.push('prompt is required when customMode is true and instrumental is false.');
+      if (prompt.length > limits.promptMax) errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
     }
   } else {
-    if (!prompt) {
-      errors.push('prompt is required when customMode is false.');
-    }
-    if (prompt.length > 500) {
-      errors.push('prompt must be 500 characters or fewer when customMode is false.');
-    }
+    if (!prompt) errors.push('prompt is required when customMode is false.');
+    if (prompt.length > 500) errors.push('prompt must be 500 characters or fewer when customMode is false.');
   }
 
   const commonValidation = validateCommonGenerationOptions(body, model);
@@ -658,13 +506,7 @@ function validateUploadCoverRequest(body) {
     ok: errors.length === 0,
     errors,
     values: {
-      uploadUrl,
-      customMode,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
+      uploadUrl, customMode, instrumental, model, prompt, style, title,
       personaId: commonValidation.values.personaId,
       personaModel: commonValidation.values.personaModel,
       negativeTags: commonValidation.values.negativeTags,
@@ -687,42 +529,21 @@ function validateUploadExtendRequest(body) {
   const continueAt = parsePositiveNumber(body.continueAt);
 
   const errors = [];
-  if (!MODEL_LIMITS[model]) {
-    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
-  }
-  if (!isValidUrl(uploadUrl)) {
-    errors.push('uploadUrl must be a valid public http or https URL.');
-  }
+  if (!MODEL_LIMITS[model]) errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  if (!isValidUrl(uploadUrl)) errors.push('uploadUrl must be a valid public http or https URL.');
 
   const limits = getModelLimits(model);
 
   if (defaultParamFlag) {
-    if (!style) {
-      errors.push('style is required when defaultParamFlag is true.');
-    }
-    if (!title) {
-      errors.push('title is required when defaultParamFlag is true.');
-    }
-    if (continueAt === undefined) {
-      errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
-    }
-    if (!instrumental && !prompt) {
-      errors.push('prompt is required when defaultParamFlag is true and instrumental is false.');
-    }
-
-    if (prompt.length > limits.promptMax) {
-      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
-    }
-    if (style.length > limits.styleMax) {
-      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-    }
-    if (title.length > limits.titleMax) {
-      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-    }
+    if (!style) errors.push('style is required when defaultParamFlag is true.');
+    if (!title) errors.push('title is required when defaultParamFlag is true.');
+    if (continueAt === undefined) errors.push('continueAt must be a number greater than 0 when defaultParamFlag is true.');
+    if (!instrumental && !prompt) errors.push('prompt is required when defaultParamFlag is true and instrumental is false.');
+    if (prompt.length > limits.promptMax) errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    if (style.length > limits.styleMax) errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+    if (title.length > limits.titleMax) errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
   } else {
-    if (!prompt) {
-      errors.push('prompt is required when defaultParamFlag is false.');
-    }
+    if (!prompt) errors.push('prompt is required when defaultParamFlag is false.');
   }
 
   const commonValidation = validateCommonGenerationOptions(body, model);
@@ -732,14 +553,7 @@ function validateUploadExtendRequest(body) {
     ok: errors.length === 0,
     errors,
     values: {
-      uploadUrl,
-      defaultParamFlag,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
-      continueAt,
+      uploadUrl, defaultParamFlag, instrumental, model, prompt, style, title, continueAt,
       personaId: commonValidation.values.personaId,
       personaModel: commonValidation.values.personaModel,
       negativeTags: commonValidation.values.negativeTags,
@@ -763,139 +577,57 @@ function validateAddInstrumentalRequest(body) {
   const model = cleanString(body.model || 'V4_5PLUS');
 
   const errors = [];
-
-  if (!isValidUrl(uploadUrl)) {
-    errors.push('uploadUrl must be a valid public http or https URL.');
-  }
-  if (!title) {
-    errors.push('title is required.');
-  }
-  if (!negativeTags) {
-    errors.push('negativeTags is required.');
-  }
-  if (!tags) {
-    errors.push('tags is required.');
-  }
-  if (vocalGender && !['m', 'f'].includes(vocalGender)) {
-    errors.push('vocalGender must be "m" or "f".');
-  }
-  if (!ADD_INSTRUMENTAL_MODELS.includes(model)) {
-    errors.push(`Unsupported model "${model}". Supported models: ${ADD_INSTRUMENTAL_MODELS.join(', ')}`);
-  }
-  if (body.styleWeight !== undefined && styleWeight === undefined) {
-    errors.push('styleWeight must be a number between 0 and 1.');
-  }
-  if (body.weirdnessConstraint !== undefined && weirdnessConstraint === undefined) {
-    errors.push('weirdnessConstraint must be a number between 0 and 1.');
-  }
-  if (body.audioWeight !== undefined && audioWeight === undefined) {
-    errors.push('audioWeight must be a number between 0 and 1.');
-  }
+  if (!isValidUrl(uploadUrl)) errors.push('uploadUrl must be a valid public http or https URL.');
+  if (!title) errors.push('title is required.');
+  if (!negativeTags) errors.push('negativeTags is required.');
+  if (!tags) errors.push('tags is required.');
+  if (vocalGender && !['m', 'f'].includes(vocalGender)) errors.push('vocalGender must be "m" or "f".');
+  if (!ADD_INSTRUMENTAL_MODELS.includes(model)) errors.push(`Unsupported model "${model}". Supported models: ${ADD_INSTRUMENTAL_MODELS.join(', ')}`);
+  if (body.styleWeight !== undefined && styleWeight === undefined) errors.push('styleWeight must be a number between 0 and 1.');
+  if (body.weirdnessConstraint !== undefined && weirdnessConstraint === undefined) errors.push('weirdnessConstraint must be a number between 0 and 1.');
+  if (body.audioWeight !== undefined && audioWeight === undefined) errors.push('audioWeight must be a number between 0 and 1.');
 
   return {
     ok: errors.length === 0,
     errors,
-    values: {
-      uploadUrl,
-      title,
-      negativeTags,
-      tags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight,
-      model
-    }
+    values: { uploadUrl, title, negativeTags, tags, vocalGender, styleWeight, weirdnessConstraint, audioWeight, model }
   };
 }
 
-
 function validateRemixRequest(body) {
-  const customMode = body.customMode !== undefined ? Boolean(body.customMode) : true;
-  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
-  const model = cleanString(body.model || SUNO_MODEL);
-  const uploadUrl = cleanString(body.uploadUrl || '');
-  const prompt = safeString(body.prompt || '').trim();
-  const style = cleanString(body.style || '');
-  const title = cleanString(body.title || 'Remix Track');
+  return validateUploadCoverRequest(body);
+}
 
-  const errors = [];
+function stripEmptyFields(payload) {
+  const out = { ...payload };
+  Object.keys(out).forEach(key => {
+    if (out[key] === undefined || out[key] === '') delete out[key];
+  });
+  return out;
+}
 
-  if (!MODEL_LIMITS[model]) {
-    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
-  }
+function resolveCallbackUrl(body) {
+  const explicit = cleanString(body?.callBackUrl || '');
+  return explicit || SUNO_CALLBACK_URL || '';
+}
 
-  if (!isValidUrl(uploadUrl)) {
-    errors.push('uploadUrl must be a valid public http or https URL.');
-  }
+function validateRequiredString(body, field, errors, label = field) {
+  const value = cleanString(body?.[field] || '');
+  if (!value) errors.push(`${label} is required.`);
+  return value;
+}
 
-  const limits = getModelLimits(model);
-
-  if (customMode) {
-    if (!style) {
-      errors.push('style is required when customMode is true.');
-    }
-    if (!title) {
-      errors.push('title is required when customMode is true.');
-    }
-    if (style.length > limits.styleMax) {
-      errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
-    }
-    if (title.length > limits.titleMax) {
-      errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
-    }
-    if (!instrumental) {
-      if (!prompt) {
-        errors.push('prompt is required when customMode is true and instrumental is false.');
-      }
-      if (prompt.length > limits.promptMax) {
-        errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
-      }
-    }
-  } else {
-    if (!prompt) {
-      errors.push('prompt is required when customMode is false.');
-    }
-    if (prompt.length > 500) {
-      errors.push('prompt must be 500 characters or fewer when customMode is false.');
-    }
-  }
-
-  const commonValidation = validateCommonGenerationOptions(body, model);
-  errors.push(...commonValidation.errors);
-
-  return {
-    ok: errors.length === 0,
-    errors,
-    values: {
-      uploadUrl,
-      customMode,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
-      personaId: commonValidation.values.personaId,
-      personaModel: commonValidation.values.personaModel,
-      negativeTags: commonValidation.values.negativeTags,
-      vocalGender: commonValidation.values.vocalGender,
-      styleWeight: commonValidation.values.styleWeight,
-      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
-      audioWeight: commonValidation.values.audioWeight
-    }
-  };
+function validateOptionalStringMax(body, field, max, errors) {
+  const value = cleanString(body?.[field] || '');
+  if (value && value.length > max) errors.push(`${field} must be ${max} characters or fewer.`);
+  return value;
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-    return response;
+    return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
@@ -914,69 +646,8 @@ async function parseResponseBody(response) {
   }
 }
 
-async function fetchSunoStatusById(id) {
-  const candidateUrls = [
-    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
-    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?id=${encodeURIComponent(id)}`,
-    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?recordId=${encodeURIComponent(id)}`
-  ];
-
-  let lastData = null;
-  let lastStatus = 500;
-
-  for (const candidate of candidateUrls) {
-    log('[SUNO STATUS TRY]', candidate);
-
-    const response = await fetchWithTimeout(candidate, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${SUNO_API_KEY}`
-      }
-    });
-
-    const data = await parseResponseBody(response);
-    lastData = data;
-    lastStatus = response.status;
-
-    if (response.ok && (data?.code === undefined || data?.code === 200)) {
-      return {
-        ok: true,
-        statusCode: response.status,
-        data,
-        attemptedUrl: candidate
-      };
-    }
-  }
-
-  return {
-    ok: false,
-    statusCode: lastStatus,
-    data: lastData
-  };
-}
-
-function sanitizePayloadForLog(payload) {
-  const copy = { ...payload };
-  if (copy.prompt) copy.prompt = `[${copy.prompt.length} chars] ${copy.prompt.slice(0, 120)}`;
-  if (copy.style) copy.style = `[${copy.style.length} chars] ${copy.style.slice(0, 120)}`;
-  if (copy.tags) copy.tags = `[${copy.tags.length} chars] ${copy.tags.slice(0, 120)}`;
-  if (copy.uploadUrl) copy.uploadUrl = '[redacted-url]';
-  return copy;
-}
-
-function stripEmptyFields(payload) {
-  const out = { ...payload };
-  Object.keys(out).forEach(key => {
-    if (out[key] === undefined || out[key] === '') {
-      delete out[key];
-    }
-  });
-  return out;
-}
-
 async function performSunoPost({ path, payload, requestId, actionName }) {
-  log(`[${actionName} REQUEST]`, requestId, sanitizePayloadForLog(payload));
-
+  log(`[${actionName} REQUEST]`, requestId, payload);
   const response = await fetchWithTimeout(`${SUNO_BASE_URL}${path}`, {
     method: 'POST',
     headers: authHeaders(),
@@ -984,11 +655,7 @@ async function performSunoPost({ path, payload, requestId, actionName }) {
   });
 
   const data = await parseResponseBody(response);
-
-  log(`[${actionName} RESPONSE]`, requestId, {
-    status: response.status,
-    body: data
-  });
+  log(`[${actionName} RESPONSE]`, requestId, { status: response.status, body: data });
 
   if (!response.ok || (data?.code && data.code !== 200)) {
     const normalized = normalizeError(response.status, data);
@@ -1006,19 +673,83 @@ async function performSunoPost({ path, payload, requestId, actionName }) {
     };
   }
 
-  const taskId = extractTaskId(data);
-
   return {
     ok: true,
     statusCode: 200,
     body: {
       ok: true,
       requestId,
-      taskId,
+      taskId: extractTaskId(data),
       status: 'submitted',
       upstream: data
     }
   };
+}
+
+async function performSunoGet({ path, query = {}, requestId, actionName }) {
+  const url = new URL(`${SUNO_BASE_URL}${path}`);
+  Object.entries(query || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+  });
+
+  log(`[${actionName} REQUEST]`, requestId, url.toString());
+
+  const response = await fetchWithTimeout(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
+  });
+
+  const data = await parseResponseBody(response);
+  log(`[${actionName} RESPONSE]`, requestId, { status: response.status, body: data });
+
+  if (!response.ok || (data?.code && ![200, '200'].includes(data.code))) {
+    const normalized = normalizeError(response.status, data);
+    return {
+      ok: false,
+      statusCode: response.status || normalized.code || 500,
+      body: { ok: false, requestId, ...normalized, attemptedUrl: url.toString() }
+    };
+  }
+
+  return { ok: true, statusCode: 200, body: { ok: true, requestId, upstream: data } };
+}
+
+async function fetchSunoStatusById(id) {
+  const candidateUrls = [
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?taskId=${encodeURIComponent(id)}`,
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?id=${encodeURIComponent(id)}`,
+    `${SUNO_BASE_URL}${SUNO_STATUS_PATH}?recordId=${encodeURIComponent(id)}`
+  ];
+
+  let lastData = null;
+  let lastStatus = 500;
+
+  for (const candidate of candidateUrls) {
+    const response = await fetchWithTimeout(candidate, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${SUNO_API_KEY}` }
+    });
+
+    const data = await parseResponseBody(response);
+    lastData = data;
+    lastStatus = response.status;
+
+    if (response.ok && (data?.code === undefined || data?.code === 200)) {
+      return { ok: true, statusCode: response.status, data, attemptedUrl: candidate };
+    }
+  }
+
+  return { ok: false, statusCode: lastStatus, data: lastData };
+}
+
+function handlerError(res, requestId, error) {
+  const isAbort = error?.name === 'AbortError';
+  return res.status(isAbort ? 504 : 500).json({
+    ok: false,
+    requestId,
+    taskId: null,
+    error: isAbort ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms` : (error.message || 'Unknown server error')
+  });
 }
 
 app.get('/api/health', (_req, res) => {
@@ -1033,6 +764,26 @@ app.get('/api/health', (_req, res) => {
     uploadExtendPath: SUNO_UPLOAD_EXTEND_PATH,
     addInstrumentalPath: SUNO_ADD_INSTRUMENTAL_PATH,
     remixPath: SUNO_REMIX_PATH,
+    addVocalsPath: SUNO_ADD_VOCALS_PATH,
+    generatePersonaPath: SUNO_GENERATE_PERSONA_PATH,
+    mashupPath: SUNO_MASHUP_PATH,
+    lyricsPath: SUNO_LYRICS_PATH,
+    lyricsStatusPath: SUNO_LYRICS_STATUS_PATH,
+    soundsPath: SUNO_SOUNDS_PATH,
+    wavGeneratePath: SUNO_WAV_GENERATE_PATH,
+    wavStatusPath: SUNO_WAV_STATUS_PATH,
+    vocalRemovalPath: SUNO_VOCAL_REMOVAL_PATH,
+    vocalRemovalStatusPath: SUNO_VOCAL_REMOVAL_STATUS_PATH,
+    midiGeneratePath: SUNO_MIDI_GENERATE_PATH,
+    midiStatusPath: SUNO_MIDI_STATUS_PATH,
+    mp4GeneratePath: SUNO_MP4_GENERATE_PATH,
+    mp4StatusPath: SUNO_MP4_STATUS_PATH,
+    styleBoostPath: SUNO_STYLE_BOOST_PATH,
+    musicCoverPath: SUNO_MUSIC_COVER_PATH,
+    musicCoverStatusPath: SUNO_MUSIC_COVER_STATUS_PATH,
+    replaceSectionPath: SUNO_REPLACE_SECTION_PATH,
+    timestampedLyricsPath: SUNO_TIMESTAMPED_LYRICS_PATH,
+    creditsPath: SUNO_CREDITS_PATH,
     defaultModel: SUNO_MODEL,
     supportedModels: Object.keys(MODEL_LIMITS),
     addInstrumentalModels: ADD_INSTRUMENTAL_MODELS,
@@ -1064,60 +815,31 @@ app.post('/api/suno-callback', (req, res) => {
       body?.data?.record_id;
 
     if (taskId) {
-      callbackStore.set(String(taskId), {
-        ...body,
-        _storedAt: Date.now()
-      });
+      callbackStore.set(String(taskId), { ...body, _storedAt: Date.now() });
       log('[SUNO CALLBACK STORED]', { taskId, status: extractStatus(body) });
     }
 
     return res.json({ ok: true });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: error.message || 'Callback processing failed'
-    });
+    return res.status(500).json({ ok: false, error: error.message || 'Callback processing failed' });
   }
 });
 
 app.post('/api/create-song', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateCreateSongRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
     const {
-      customMode,
-      instrumental,
-      model,
-      title,
-      prompt,
-      lyrics,
-      style,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight
+      customMode, instrumental, model, title, prompt, lyrics, style,
+      personaId, personaModel, negativeTags, vocalGender, styleWeight, weirdnessConstraint, audioWeight
     } = validation.values;
 
     const payload = {
       customMode,
       instrumental,
       model,
-      prompt: undefined,
-      style: undefined,
-      title: undefined,
       callBackUrl: SUNO_CALLBACK_URL || undefined,
       personaId: personaId || undefined,
       personaModel: personaId ? personaModel : undefined,
@@ -1129,86 +851,33 @@ app.post('/api/create-song', async (req, res) => {
     };
 
     if (customMode) {
-      if (!SUNO_CALLBACK_URL) {
-        return res.status(500).json({
-          ok: false,
-          requestId,
-          error: 'Missing SUNO_CALLBACK_URL'
-        });
-      }
-
+      if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
       payload.title = title;
       payload.style = style;
-
-      if (!instrumental) {
-        payload.prompt = prompt || lyrics;
-      }
+      if (!instrumental) payload.prompt = prompt || lyrics;
     } else {
       payload.prompt = truncate(prompt || lyrics || '', 500);
-      delete payload.title;
-      delete payload.style;
     }
 
-    const result = await performSunoPost({
-      path: SUNO_CREATE_PATH,
-      payload: stripEmptyFields(payload),
-      requestId,
-      actionName: 'CREATE SONG'
-    });
-
+    const result = await performSunoPost({ path: SUNO_CREATE_PATH, payload: stripEmptyFields(payload), requestId, actionName: 'CREATE SONG' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
 app.post('/api/extend-song', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateExtendSongRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
     const {
-      defaultParamFlag,
-      instrumental,
-      model,
-      audioId,
-      prompt,
-      style,
-      title,
-      continueAt,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight
+      defaultParamFlag, instrumental, model, audioId, prompt, style, title, continueAt,
+      personaId, personaModel, negativeTags, vocalGender, styleWeight, weirdnessConstraint, audioWeight
     } = validation.values;
 
-    if (!SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
+    if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
 
     const payload = stripEmptyFields({
       defaultParamFlag,
@@ -1229,65 +898,25 @@ app.post('/api/extend-song', async (req, res) => {
       audioWeight
     });
 
-    const result = await performSunoPost({
-      path: SUNO_EXTEND_PATH,
-      payload,
-      requestId,
-      actionName: 'EXTEND SONG'
-    });
-
+    const result = await performSunoPost({ path: SUNO_EXTEND_PATH, payload, requestId, actionName: 'EXTEND SONG' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
 app.post('/api/upload-cover', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateUploadCoverRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
     const {
-      uploadUrl,
-      customMode,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight
+      uploadUrl, customMode, instrumental, model, prompt, style, title,
+      personaId, personaModel, negativeTags, vocalGender, styleWeight, weirdnessConstraint, audioWeight
     } = validation.values;
 
-    if (!SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
+    if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
 
     const payload = stripEmptyFields({
       uploadUrl,
@@ -1295,9 +924,7 @@ app.post('/api/upload-cover', async (req, res) => {
       instrumental,
       model,
       callBackUrl: SUNO_CALLBACK_URL,
-      prompt: customMode
-        ? (!instrumental ? prompt : undefined)
-        : truncate(prompt, 500),
+      prompt: customMode ? (!instrumental ? prompt : undefined) : truncate(prompt, 500),
       style: customMode ? style : undefined,
       title: customMode ? title : undefined,
       personaId: personaId || undefined,
@@ -1309,66 +936,25 @@ app.post('/api/upload-cover', async (req, res) => {
       audioWeight
     });
 
-    const result = await performSunoPost({
-      path: SUNO_UPLOAD_COVER_PATH,
-      payload,
-      requestId,
-      actionName: 'UPLOAD COVER'
-    });
-
+    const result = await performSunoPost({ path: SUNO_UPLOAD_COVER_PATH, payload, requestId, actionName: 'UPLOAD COVER' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
 app.post('/api/upload-extend', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateUploadExtendRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
     const {
-      uploadUrl,
-      defaultParamFlag,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
-      continueAt,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight
+      uploadUrl, defaultParamFlag, instrumental, model, prompt, style, title, continueAt,
+      personaId, personaModel, negativeTags, vocalGender, styleWeight, weirdnessConstraint, audioWeight
     } = validation.values;
 
-    if (!SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
+    if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
 
     const payload = stripEmptyFields({
       uploadUrl,
@@ -1389,60 +975,21 @@ app.post('/api/upload-extend', async (req, res) => {
       audioWeight
     });
 
-    const result = await performSunoPost({
-      path: SUNO_UPLOAD_EXTEND_PATH,
-      payload,
-      requestId,
-      actionName: 'UPLOAD EXTEND'
-    });
-
+    const result = await performSunoPost({ path: SUNO_UPLOAD_EXTEND_PATH, payload, requestId, actionName: 'UPLOAD EXTEND' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
 app.post('/api/add-instrumental', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateAddInstrumentalRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
-    const {
-      uploadUrl,
-      title,
-      negativeTags,
-      tags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight,
-      model
-    } = validation.values;
-
-    if (!SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
+    const { uploadUrl, title, negativeTags, tags, vocalGender, styleWeight, weirdnessConstraint, audioWeight, model } = validation.values;
+    if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
 
     const payload = stripEmptyFields({
       uploadUrl,
@@ -1457,66 +1004,25 @@ app.post('/api/add-instrumental', async (req, res) => {
       model
     });
 
-    const result = await performSunoPost({
-      path: SUNO_ADD_INSTRUMENTAL_PATH,
-      payload,
-      requestId,
-      actionName: 'ADD INSTRUMENTAL'
-    });
-
+    const result = await performSunoPost({ path: SUNO_ADD_INSTRUMENTAL_PATH, payload, requestId, actionName: 'ADD INSTRUMENTAL' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
-
 app.post('/api/remix-song', async (req, res) => {
   const requestId = createRequestId();
-
   try {
     const validation = validateRemixRequest(req.body || {});
-    if (!validation.ok) {
-      return res.status(400).json({
-        ok: false,
-        requestId,
-        error: 'Validation failed.',
-        details: validation.errors
-      });
-    }
+    if (!validation.ok) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: validation.errors });
 
     const {
-      uploadUrl,
-      customMode,
-      instrumental,
-      model,
-      prompt,
-      style,
-      title,
-      personaId,
-      personaModel,
-      negativeTags,
-      vocalGender,
-      styleWeight,
-      weirdnessConstraint,
-      audioWeight
+      uploadUrl, customMode, instrumental, model, prompt, style, title,
+      personaId, personaModel, negativeTags, vocalGender, styleWeight, weirdnessConstraint, audioWeight
     } = validation.values;
 
-    if (!SUNO_CALLBACK_URL) {
-      return res.status(500).json({
-        ok: false,
-        requestId,
-        error: 'Missing SUNO_CALLBACK_URL'
-      });
-    }
+    if (!SUNO_CALLBACK_URL) return res.status(500).json({ ok: false, requestId, error: 'Missing SUNO_CALLBACK_URL' });
 
     const payload = stripEmptyFields({
       uploadUrl,
@@ -1524,9 +1030,7 @@ app.post('/api/remix-song', async (req, res) => {
       instrumental,
       model,
       callBackUrl: SUNO_CALLBACK_URL,
-      prompt: customMode
-        ? (!instrumental ? prompt : undefined)
-        : truncate(prompt, 500),
+      prompt: customMode ? (!instrumental ? prompt : undefined) : truncate(prompt, 500),
       style: customMode ? style : undefined,
       title: customMode ? title : undefined,
       personaId: personaId || undefined,
@@ -1538,33 +1042,408 @@ app.post('/api/remix-song', async (req, res) => {
       audioWeight
     });
 
-    const result = await performSunoPost({
-      path: SUNO_REMIX_PATH,
-      payload,
-      requestId,
-      actionName: 'REMIX SONG'
-    });
-
+    const result = await performSunoPost({ path: SUNO_REMIX_PATH, payload, requestId, actionName: 'REMIX SONG' });
     return res.status(result.statusCode).json(result.body);
   } catch (error) {
-    const isAbort = error?.name === 'AbortError';
-    return res.status(isAbort ? 504 : 500).json({
-      ok: false,
-      requestId,
-      taskId: null,
-      error: isAbort
-        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
-    });
+    return handlerError(res, requestId, error);
   }
 });
 
+// Advanced endpoints
+
+app.post('/api/add-vocals', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const uploadUrl = validateRequiredString(body, 'uploadUrl', errors);
+    const title = validateRequiredString(body, 'title', errors);
+    const prompt = validateRequiredString(body, 'prompt', errors);
+    const style = validateRequiredString(body, 'style', errors);
+    const negativeTags = validateRequiredString(body, 'negativeTags', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!isValidUrl(uploadUrl)) errors.push('uploadUrl must be a valid public http or https URL.');
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({
+      ...body,
+      uploadUrl,
+      title,
+      prompt,
+      style,
+      negativeTags,
+      callBackUrl
+    });
+
+    const result = await performSunoPost({ path: SUNO_ADD_VOCALS_PATH, payload, requestId, actionName: 'ADD VOCALS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/generate-persona', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    const name = validateRequiredString(body, 'name', errors);
+    const description = validateRequiredString(body, 'description', errors);
+    const vocalStart = parseNonNegativeNumber(body.vocalStart);
+    const vocalEnd = parseNonNegativeNumber(body.vocalEnd);
+    if (body.vocalStart !== undefined && vocalStart === undefined) errors.push('vocalStart must be a number greater than or equal to 0.');
+    if (body.vocalEnd !== undefined && vocalEnd === undefined) errors.push('vocalEnd must be a number greater than or equal to 0.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, audioId, name, description, vocalStart, vocalEnd });
+    const result = await performSunoPost({ path: SUNO_GENERATE_PERSONA_PATH, payload, requestId, actionName: 'GENERATE PERSONA' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/mashup', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const uploadUrlList = Array.isArray(body.uploadUrlList) ? body.uploadUrlList.map(v => cleanString(v)).filter(Boolean) : [];
+    if (uploadUrlList.length !== 2) errors.push('uploadUrlList must contain exactly 2 valid audio URLs.');
+    uploadUrlList.forEach(url => { if (!isValidUrl(url)) errors.push('Each uploadUrlList item must be a valid public http or https URL.'); });
+
+    const customMode = body.customMode !== undefined ? Boolean(body.customMode) : true;
+    const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
+    const model = cleanString(body.model || SUNO_MODEL);
+    const prompt = safeString(body.prompt || '').trim();
+    const style = cleanString(body.style || '');
+    const title = cleanString(body.title || '');
+
+    if (!MODEL_LIMITS[model]) errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+    const limits = getModelLimits(model);
+    if (customMode) {
+      if (!style) errors.push('style is required when customMode is true.');
+      if (!title) errors.push('title is required when customMode is true.');
+      if (!instrumental && !prompt) errors.push('prompt is required when customMode is true and instrumental is false.');
+      if (style.length > limits.styleMax) errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+      if (title.length > limits.titleMax) errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+      if (!instrumental && prompt.length > limits.promptMax) errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    } else {
+      if (!prompt) errors.push('prompt is required when customMode is false.');
+      if (prompt.length > 500) errors.push('prompt must be 500 characters or fewer when customMode is false.');
+    }
+
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, uploadUrlList, customMode, instrumental, model, prompt, style, title, callBackUrl });
+    const result = await performSunoPost({ path: SUNO_MASHUP_PATH, payload, requestId, actionName: 'GENERATE MASHUP' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/lyrics', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const prompt = validateRequiredString(body, 'prompt', errors);
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, prompt });
+    const result = await performSunoPost({ path: SUNO_LYRICS_PATH, payload, requestId, actionName: 'GENERATE LYRICS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/lyrics-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_LYRICS_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'LYRICS STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/sounds', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const prompt = validateRequiredString(body, 'prompt', errors);
+    const callBackUrl = cleanString(body.callBackUrl || '');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, prompt, callBackUrl: callBackUrl || undefined });
+    const result = await performSunoPost({ path: SUNO_SOUNDS_PATH, payload, requestId, actionName: 'GENERATE SOUNDS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/wav-generate', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, audioId, callBackUrl });
+    const result = await performSunoPost({ path: SUNO_WAV_GENERATE_PATH, payload, requestId, actionName: 'WAV GENERATE' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/wav-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_WAV_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'WAV STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/vocal-removal', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    const type = cleanString(body.type || 'separate_vocal');
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (!SEPARATION_TYPES.includes(type)) errors.push(`type must be one of: ${SEPARATION_TYPES.join(', ')}`);
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, audioId, type, callBackUrl });
+    const result = await performSunoPost({ path: SUNO_VOCAL_REMOVAL_PATH, payload, requestId, actionName: 'VOCAL REMOVAL' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/vocal-removal-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_VOCAL_REMOVAL_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'VOCAL REMOVAL STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/midi-generate', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = cleanString(body.audioId || '');
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, audioId: audioId || undefined, callBackUrl });
+    const result = await performSunoPost({ path: SUNO_MIDI_GENERATE_PATH, payload, requestId, actionName: 'MIDI GENERATE' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/midi-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_MIDI_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'MIDI STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/mp4-generate', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    const author = validateOptionalStringMax(body, 'author', 50, errors);
+    const domainName = validateOptionalStringMax(body, 'domainName', 50, errors);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, audioId, callBackUrl, author: author || undefined, domainName: domainName || undefined });
+    const result = await performSunoPost({ path: SUNO_MP4_GENERATE_PATH, payload, requestId, actionName: 'MP4 GENERATE' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/mp4-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_MP4_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'MP4 STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/style-boost', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const content = validateRequiredString(body, 'content', errors);
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ content });
+    const result = await performSunoPost({ path: SUNO_STYLE_BOOST_PATH, payload, requestId, actionName: 'STYLE BOOST' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/music-cover', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ ...body, taskId, callBackUrl });
+    const result = await performSunoPost({ path: SUNO_MUSIC_COVER_PATH, payload, requestId, actionName: 'MUSIC COVER' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/music-cover-status/:id', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const id = cleanString(req.params.id || '');
+    if (!id) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: ['id is required.'] });
+    const result = await performSunoGet({ path: SUNO_MUSIC_COVER_STATUS_PATH, query: { taskId: id }, requestId, actionName: 'MUSIC COVER STATUS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/replace-section', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    const prompt = validateRequiredString(body, 'prompt', errors);
+    const callBackUrl = resolveCallbackUrl(body);
+    if (!callBackUrl) errors.push('Missing SUNO_CALLBACK_URL or callBackUrl.');
+    if (callBackUrl && !isValidUrl(callBackUrl)) errors.push('callBackUrl must be a valid public http or https URL.');
+
+    const startTime = parseNonNegativeNumber(body.startTime ?? body.startSecond);
+    const endTime = parseNonNegativeNumber(body.endTime ?? body.endSecond);
+    if ((body.startTime !== undefined || body.startSecond !== undefined) && startTime === undefined) errors.push('startTime/startSecond must be a number greater than or equal to 0.');
+    if ((body.endTime !== undefined || body.endSecond !== undefined) && endTime === undefined) errors.push('endTime/endSecond must be a number greater than or equal to 0.');
+
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({
+      ...body,
+      taskId,
+      audioId,
+      prompt,
+      callBackUrl,
+      startTime: startTime ?? undefined,
+      endTime: endTime ?? undefined
+    });
+
+    const result = await performSunoPost({ path: SUNO_REPLACE_SECTION_PATH, payload, requestId, actionName: 'REPLACE SECTION' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.post('/api/timestamped-lyrics', async (req, res) => {
+  const requestId = createRequestId();
+  try {
+    const body = req.body || {};
+    const errors = [];
+    const taskId = validateRequiredString(body, 'taskId', errors);
+    const audioId = validateRequiredString(body, 'audioId', errors);
+    if (errors.length) return res.status(400).json({ ok: false, requestId, error: 'Validation failed.', details: errors });
+
+    const payload = stripEmptyFields({ taskId, audioId });
+    const result = await performSunoPost({ path: SUNO_TIMESTAMPED_LYRICS_PATH, payload, requestId, actionName: 'TIMESTAMPED LYRICS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+app.get('/api/credits', async (_req, res) => {
+  const requestId = createRequestId();
+  try {
+    const result = await performSunoGet({ path: SUNO_CREDITS_PATH, query: {}, requestId, actionName: 'CREDITS' });
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    return handlerError(res, requestId, error);
+  }
+});
+
+// Original status helpers for music generation task ids
 app.get('/api/song-status/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    if (!id) {
-      return res.status(400).json({ ok: false, error: 'Missing task id' });
-    }
+    if (!id) return res.status(400).json({ ok: false, error: 'Missing task id' });
 
     if (callbackStore.has(id)) {
       const cb = callbackStore.get(id);
@@ -1580,7 +1459,6 @@ app.get('/api/song-status/:id', async (req, res) => {
     }
 
     const result = await fetchSunoStatusById(id);
-
     if (result.ok) {
       return res.json({
         ok: true,
@@ -1593,18 +1471,12 @@ app.get('/api/song-status/:id', async (req, res) => {
       });
     }
 
-    return res.status(result.statusCode || 500).json({
-      ok: false,
-      error: 'Suno status request failed',
-      upstream: result.data
-    });
+    return res.status(result.statusCode || 500).json({ ok: false, error: 'Suno status request failed', upstream: result.data });
   } catch (error) {
     const isAbort = error?.name === 'AbortError';
     return res.status(isAbort ? 504 : 500).json({
       ok: false,
-      error: isAbort
-        ? `Status request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
+      error: isAbort ? `Status request timed out after ${REQUEST_TIMEOUT_MS}ms` : (error.message || 'Unknown server error')
     });
   }
 });
@@ -1612,64 +1484,35 @@ app.get('/api/song-status/:id', async (req, res) => {
 app.get('/api/song-tracks/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    if (!id) {
-      return res.status(400).json({ ok: false, error: 'Missing task id' });
-    }
+    if (!id) return res.status(400).json({ ok: false, error: 'Missing task id' });
 
     if (callbackStore.has(id)) {
       const cb = callbackStore.get(id);
-      return res.json({
-        ok: true,
-        source: 'callback-cache',
-        taskId: id,
-        tracks: extractAudioTracks(cb),
-        upstream: cb
-      });
+      return res.json({ ok: true, source: 'callback-cache', taskId: id, tracks: extractAudioTracks(cb), upstream: cb });
     }
 
     const result = await fetchSunoStatusById(id);
-
     if (result.ok) {
-      return res.json({
-        ok: true,
-        source: 'suno-api',
-        taskId: id,
-        tracks: extractAudioTracks(result.data),
-        upstream: result.data
-      });
+      return res.json({ ok: true, source: 'suno-api', taskId: id, tracks: extractAudioTracks(result.data), upstream: result.data });
     }
 
-    return res.status(result.statusCode || 500).json({
-      ok: false,
-      error: 'Suno track request failed',
-      upstream: result.data
-    });
+    return res.status(result.statusCode || 500).json({ ok: false, error: 'Suno track request failed', upstream: result.data });
   } catch (error) {
     const isAbort = error?.name === 'AbortError';
     return res.status(isAbort ? 504 : 500).json({
       ok: false,
-      error: isAbort
-        ? `Track request timed out after ${REQUEST_TIMEOUT_MS}ms`
-        : (error.message || 'Unknown server error')
+      error: isAbort ? `Track request timed out after ${REQUEST_TIMEOUT_MS}ms` : (error.message || 'Unknown server error')
     });
   }
 });
 
 app.use((req, res) => {
-  res.status(404).json({
-    ok: false,
-    error: 'Route not found',
-    method: req.method,
-    path: req.originalUrl
-  });
+  res.status(404).json({ ok: false, error: 'Route not found', method: req.method, path: req.originalUrl });
 });
 
 app.use((error, _req, res, _next) => {
   console.error('[UNHANDLED ERROR]', error);
-  res.status(500).json({
-    ok: false,
-    error: error?.message || 'Internal server error'
-  });
+  res.status(500).json({ ok: false, error: error?.message || 'Internal server error' });
 });
 
 app.listen(PORT, () => {
