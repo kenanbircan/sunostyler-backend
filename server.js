@@ -808,6 +808,71 @@ function validateAddInstrumentalRequest(body) {
   };
 }
 
+function validateRemixRequest(body) {
+  const model = cleanString(body.model || SUNO_MODEL);
+  const uploadUrl = cleanString(body.uploadUrl || '');
+  const prompt = safeString(body.prompt || '').trim();
+  const style = cleanString(body.style || '');
+  const title = cleanString(body.title || 'Remix Track');
+  const instrumental = body.instrumental !== undefined ? Boolean(body.instrumental) : false;
+
+  const errors = [];
+
+  if (!MODEL_LIMITS[model]) {
+    errors.push(`Unsupported model "${model}". Supported models: ${Object.keys(MODEL_LIMITS).join(', ')}`);
+  }
+
+  if (!isValidUrl(uploadUrl)) {
+    errors.push('uploadUrl must be a valid public http or https URL.');
+  }
+
+  if (!style) {
+    errors.push('style is required for remix.');
+  }
+
+  const limits = getModelLimits(model);
+
+  if (style.length > limits.styleMax) {
+    errors.push(`style exceeds ${limits.styleMax} characters for model ${model}.`);
+  }
+
+  if (title.length > limits.titleMax) {
+    errors.push(`title exceeds ${limits.titleMax} characters for model ${model}.`);
+  }
+
+  if (!instrumental) {
+    if (!prompt) {
+      errors.push('prompt is required for remix when instrumental is false.');
+    }
+    if (prompt.length > limits.promptMax) {
+      errors.push(`prompt exceeds ${limits.promptMax} characters for model ${model}.`);
+    }
+  }
+
+  const commonValidation = validateCommonGenerationOptions(body, model);
+  errors.push(...commonValidation.errors);
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    values: {
+      uploadUrl,
+      model,
+      prompt,
+      style,
+      title,
+      instrumental,
+      personaId: commonValidation.values.personaId,
+      personaModel: commonValidation.values.personaModel,
+      negativeTags: commonValidation.values.negativeTags,
+      vocalGender: commonValidation.values.vocalGender,
+      styleWeight: commonValidation.values.styleWeight,
+      weirdnessConstraint: commonValidation.values.weirdnessConstraint,
+      audioWeight: commonValidation.values.audioWeight
+    }
+  };
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1383,6 +1448,83 @@ app.post('/api/add-instrumental', async (req, res) => {
       payload,
       requestId,
       actionName: 'ADD INSTRUMENTAL'
+    });
+
+    return res.status(result.statusCode).json(result.body);
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    return res.status(isAbort ? 504 : 500).json({
+      ok: false,
+      requestId,
+      taskId: null,
+      error: isAbort
+        ? `Upstream request timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : (error.message || 'Unknown server error')
+    });
+  }
+});
+
+app.post('/api/remix-song', async (req, res) => {
+  const requestId = createRequestId();
+
+  try {
+    const validation = validateRemixRequest(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        requestId,
+        error: 'Validation failed.',
+        details: validation.errors
+      });
+    }
+
+    const {
+      uploadUrl,
+      model,
+      prompt,
+      style,
+      title,
+      instrumental,
+      personaId,
+      personaModel,
+      negativeTags,
+      vocalGender,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    } = validation.values;
+
+    if (!SUNO_CALLBACK_URL) {
+      return res.status(500).json({
+        ok: false,
+        requestId,
+        error: 'Missing SUNO_CALLBACK_URL'
+      });
+    }
+
+    const payload = stripEmptyFields({
+      uploadUrl,
+      customMode: true,
+      instrumental,
+      model,
+      callBackUrl: SUNO_CALLBACK_URL,
+      prompt: !instrumental ? prompt : undefined,
+      style,
+      title,
+      personaId: personaId || undefined,
+      personaModel: personaId ? personaModel : undefined,
+      negativeTags: negativeTags || undefined,
+      vocalGender: vocalGender || undefined,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight
+    });
+
+    const result = await performSunoPost({
+      path: SUNO_UPLOAD_COVER_PATH,
+      payload,
+      requestId,
+      actionName: 'REMIX SONG'
     });
 
     return res.status(result.statusCode).json(result.body);
